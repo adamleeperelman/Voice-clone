@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "voice-clone"
+version = "0.1.0"
+description = "Voice cloning project using audio separation and TTS"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9,<3.14"
+librosa = "^0.10.1"
+soundfile = "^0.12.1"
+numpy = "^1.22.0"
+scipy = "^1.11.0"
+matplotlib = "^3.7.0"
+pydub = "^0.25.1"
+noisereduce = "^3.0.0"
+torch = "^2.0.0"
+torchaudio = "^2.0.0"
+TTS = "^0.22.0"
+transformers = "^4.35.0"
+datasets = "^2.14.0"
+accelerate = "^0.24.0"
+jupyter = "^1.0.0"
+ipykernel = "^6.25.0"
+speechbrain = "^0.5.16"
+pyannote-audio = "^3.1.0"
+webrtcvad = "^2.0.10"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+black = "^23.7.0"
+flake8 = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
