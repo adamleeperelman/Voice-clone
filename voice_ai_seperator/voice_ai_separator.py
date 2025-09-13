@@ -19,8 +19,8 @@ warnings.filterwarnings("ignore")
 def load_whisper():
     try:
         # Try different import methods
-        import voice_ai_separator as w
-        return w
+        import whisper
+        return whisper
     except Exception as e:
         print(f"❌ Error loading Whisper: {e}")
         print("Install with: pip install openai-whisper")
@@ -47,13 +47,51 @@ class VoiceAISeparator:
             result = self.whisper_model.transcribe(
                 audio_file_path,
                 word_timestamps=True,
-                language="en"
+                language="en",
+                # Better segmentation parameters
+                temperature=0.0,  # More consistent results
+                best_of=1,        # Faster processing
+                beam_size=1       # More deterministic
             )
             return result
         except Exception as e:
             print(f"❌ Transcription failed: {e}")
             return None
     
+    def merge_short_segments(self, segments, min_duration=3.0, max_duration=15.0):
+        """
+        Merge short segments to create more natural speech units
+        """
+        if not segments:
+            return segments
+            
+        merged_segments = []
+        current_segment = None
+        
+        for segment in segments:
+            duration = segment['end'] - segment['start']
+            
+            if current_segment is None:
+                current_segment = segment.copy()
+            elif (current_segment['end'] - current_segment['start']) < min_duration:
+                # Merge with current segment if it's too short
+                current_segment['end'] = segment['end']
+                current_segment['text'] += segment['text']
+            elif (current_segment['end'] - current_segment['start']) > max_duration:
+                # Current segment is too long, finalize it and start new one
+                merged_segments.append(current_segment)
+                current_segment = segment.copy()
+            else:
+                # Current segment is good size, finalize it and start new one
+                merged_segments.append(current_segment)
+                current_segment = segment.copy()
+        
+        # Don't forget the last segment
+        if current_segment is not None:
+            merged_segments.append(current_segment)
+            
+        return merged_segments
+
     def analyze_with_gpt(self, transcription_data):
         """
         Use GPT to find the best segments
@@ -64,9 +102,13 @@ class VoiceAISeparator:
         
         print("🧠 Analyzing with GPT...")
         
+        # First, merge short segments for better speech units
+        merged_segments = self.merge_short_segments(transcription_data['segments'])
+        print(f"📝 Merged {len(transcription_data['segments'])} segments into {len(merged_segments)} better units")
+        
         # Prepare segments for analysis
         segments_text = []
-        for segment in transcription_data['segments']:
+        for segment in merged_segments:
             start = segment['start']
             end = segment['end']
             text = segment['text'].strip()
@@ -134,9 +176,13 @@ Focus on segments with:
         """
         print("📝 Using basic analysis...")
         
+        # First, merge short segments for better speech units
+        merged_segments = self.merge_short_segments(transcription_data['segments'])
+        print(f"📝 Merged {len(transcription_data['segments'])} segments into {len(merged_segments)} better units")
+        
         recommendations = []
         
-        for segment in transcription_data['segments']:
+        for segment in merged_segments:
             duration = segment['end'] - segment['start']
             text_length = len(segment['text'].strip())
             
