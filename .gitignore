@@ -48,6 +48,25 @@ venv.bak/
 *.mp4
 *.avi
 *.mkv
+
+# Training and temporary data
+finetune_data/
+training_output/
+comparison_output/
+generated_speech/
+test_output/
+*.safetensors
+*.pt
+*.pth
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 *.mov
 *.wmv
 *.flv
