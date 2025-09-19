@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
 Voice Separator Module
-Complete voice separation functionality using Whisper + GPT
-Combines preprocessing and core separation in one unified class
+Handles core voice separation functionality using Whisper + GPT
 """
 
 import os
 import sys
-import re
-import json
 import numpy as np
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from pathlib import Path
+import json
 from openai import OpenAI
 from typing import Dict, List, Optional, Tuple
 import warnings
@@ -31,8 +29,8 @@ def load_whisper():
 
 class VoiceSeparator:
     """
-    Unified Voice Separator
-    Complete voice separation functionality with preprocessing and speaker analysis
+    Core Voice Separation functionality
+    Separates audio files by speakers using Whisper + GPT
     """
     
     def __init__(self, openai_api_key: Optional[str] = None):
@@ -119,13 +117,25 @@ class VoiceSeparator:
                 if current_segment is None:
                     current_segment = segment
                 else:
-                    current_segment += segment
+                    if len(current_segment) + segment_len <= max_len:
+                        current_segment += segment
+                    else:
+                        if len(current_segment) >= min_len:
+                            optimized.append(current_segment)
+                        current_segment = segment
             else:
                 # Segment is good length
                 if current_segment:
-                    optimized.append(current_segment)
-                    current_segment = None
-                optimized.append(segment)
+                    if len(current_segment) + segment_len <= max_len:
+                        optimized.append(current_segment + segment)
+                        current_segment = None
+                    else:
+                        if len(current_segment) >= min_len:
+                            optimized.append(current_segment)
+                        optimized.append(segment)
+                        current_segment = None
+                else:
+                    optimized.append(segment)
         
         # Don't forget the last segment
         if current_segment and len(current_segment) >= min_len:
@@ -168,7 +178,8 @@ class VoiceSeparator:
                 # Audio quality checks
                 audio_array = np.array(segment.get_array_of_samples())
                 if segment.channels == 2:
-                    audio_array = audio_array.reshape((-1, 2)).mean(axis=1)
+                    audio_array = audio_array.reshape((-1, 2))
+                    audio_array = audio_array.mean(axis=1)
                 
                 rms = np.sqrt(np.mean(audio_array**2))
                 dynamic_range = np.max(np.abs(audio_array)) - np.min(np.abs(audio_array))
@@ -190,7 +201,7 @@ class VoiceSeparator:
                 os.remove(temp_path)
                 
                 if i % 10 == 0:
-                    print(f"   Transcribed {i+1}/{len(segments)} segments...")
+                    print(f"   Processed {i+1}/{len(segments)} segments")
                     
             except Exception as e:
                 print(f"⚠️  Error transcribing segment {i}: {e}")
@@ -318,7 +329,7 @@ class VoiceSeparator:
         
         if not text_segments:
             print("❌ No high-quality transcriptions available for analysis")
-            return {}, []
+            return {}, {}
         
         analysis_text = "\n".join(text_segments[:30])
         
@@ -332,7 +343,7 @@ class VoiceSeparator:
                     },
                     {
                         "role": "user",
-                        "content": f"Analyze these transcribed audio segments and group them by speaker. Return a JSON with speaker assignments:\n\n{analysis_text}\n\nFormat: {{\"left_speaker\": [segment_indices], \"right_speaker\": [segment_indices]}}"
+                        "content": f"Analyze these transcribed audio segments and group them by speaker. Return a JSON with speaker assignments:\n\n{analysis_text}\n\nFormat: {{\"speaker_1\": [segment_indices], \"speaker_2\": [segment_indices]}}"
                     }
                 ],
                 temperature=0.3
@@ -341,10 +352,11 @@ class VoiceSeparator:
             result_text = response.choices[0].message.content
             
             # Try to extract JSON
+            import re
             json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
             if json_match:
                 speaker_assignments = json.loads(json_match.group())
-                print(f"✅ GPT analysis complete - identified {len(speaker_assignments)} speakers")
+                print(f"✅ GPT identified {len(speaker_assignments)} speakers")
                 return speaker_assignments, high_quality_transcriptions
             else:
                 print("⚠️  Could not parse GPT response - using simple separation")
@@ -362,8 +374,10 @@ class VoiceSeparator:
         
         for i, t in enumerate(transcriptions):
             if t['text']:
-                speaker = "left_speaker" if i % 2 == 0 else "right_speaker"
-                speaker_assignments[speaker].append(t['index'])
+                if i % 2 == 0:
+                    speaker_assignments["left_speaker"].append(t['index'])
+                else:
+                    speaker_assignments["right_speaker"].append(t['index'])
         
         return speaker_assignments, transcriptions
     
@@ -389,7 +403,6 @@ class VoiceSeparator:
         
         for speaker, segment_indices in speaker_assignments.items():
             if not segment_indices:
-                print(f"⚠️  No segments assigned to {speaker}")
                 continue
                 
             speaker_dir = os.path.join(output_dir, speaker)
@@ -398,28 +411,28 @@ class VoiceSeparator:
                 if seg_idx < len(segments) and seg_idx in transcription_lookup:
                     segment = segments[seg_idx]
                     transcription = transcription_lookup[seg_idx]
-                    
-                    # Generate filename with quality info
-                    duration = len(segment) / 1000.0
+                    duration = transcription['duration']
                     confidence = transcription['avg_logprob']
-                    quality_tag = "q7" if confidence > -0.3 else "q6" if confidence > -0.7 else "q5"
                     
-                    filename = f"AI_{i+1:03d}_{duration:.1f}s_{quality_tag}.wav"
-                    output_path = os.path.join(speaker_dir, filename)
+                    # Enhanced filename with quality metrics
+                    filename = f"AI_{i+1:03d}_{duration:.1f}s_conf{confidence:.2f}.wav"
+                    filepath = os.path.join(speaker_dir, filename)
                     
                     # Export segment
-                    segment.export(output_path, format="wav")
-                    saved_files.append(output_path)
+                    segment.export(filepath, format="wav")
+                    saved_files.append(filepath)
                     
+                    # Track quality stats
                     quality_stats.append({
                         'file': filename,
-                        'speaker': speaker,
                         'duration': duration,
                         'confidence': confidence,
-                        'text': transcription['text'][:100] + "..." if len(transcription['text']) > 100 else transcription['text']
+                        'no_speech_prob': transcription['no_speech_prob'],
+                        'word_count': transcription['word_count'],
+                        'text': transcription['text'][:50] + "..." if len(transcription['text']) > 50 else transcription['text']
                     })
                     
-                    print(f"💾 Saved: {filename} ({duration:.1f}s, conf: {confidence:.2f})")
+                    print(f"💾 Saved high-quality: {filepath} (conf: {confidence:.2f})")
         
         # Save quality report
         quality_report_path = os.path.join(output_dir, "quality_report.json")
@@ -492,24 +505,21 @@ class VoiceSeparator:
         
         for speaker, indices in speaker_assignments.items():
             analysis_file = os.path.join(analysis_dir, f"{speaker}_analysis.json")
-            speaker_data = {
-                'speaker_name': speaker,
-                'total_segments': len(indices),
-                'total_duration': sum(transcription_lookup[idx]['duration'] for idx in indices if idx in transcription_lookup),
-                'average_confidence': sum(transcription_lookup[idx]['avg_logprob'] for idx in indices if idx in transcription_lookup) / len(indices) if indices else 0,
-                'segments': [
-                    {
-                        'index': idx,
-                        'text': transcription_lookup[idx]['text'],
-                        'duration': transcription_lookup[idx]['duration'],
-                        'confidence': transcription_lookup[idx]['avg_logprob']
-                    }
-                    for idx in indices if idx in transcription_lookup
-                ]
-            }
-            
             with open(analysis_file, 'w') as f:
-                json.dump(speaker_data, f, indent=2)
+                speaker_transcriptions = []
+                for i in indices:
+                    if i in transcription_lookup:
+                        speaker_transcriptions.append(transcription_lookup[i])
+                
+                json.dump({
+                    'speaker': speaker,
+                    'total_high_quality_segments': len(speaker_transcriptions),
+                    'segment_indices': indices,
+                    'average_confidence': sum(t['avg_logprob'] for t in speaker_transcriptions) / len(speaker_transcriptions) if speaker_transcriptions else 0,
+                    'average_duration': sum(t['duration'] for t in speaker_transcriptions) / len(speaker_transcriptions) if speaker_transcriptions else 0,
+                    'total_duration': sum(t['duration'] for t in speaker_transcriptions),
+                    'transcriptions': speaker_transcriptions
+                }, f, indent=2)
         
         print(f"🎉 Voice separation complete!")
         print(f"📁 Output: {output_dir}")

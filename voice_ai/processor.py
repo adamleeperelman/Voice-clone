@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 # Import the component modules
-from .voice_separator import VoiceAISeparator
+from .audio_processor import AudioProcessor
+from .voice_separator import VoiceSeparator
 from .voice_trainer import VoiceTrainer
 from .voice_synthesizer import VoiceSynthesizer
 
@@ -21,14 +22,14 @@ class VoiceAIProcessor:
     """
     
     def __init__(self, workspace_path: str = None, openai_api_key: str = None):
-        """Initialize the Voice AI Processor"""
-        self.workspace_path = workspace_path or os.getcwd()
-        self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+        """Initialize the Voice AI Processor with all components"""
+        self.workspace_path = workspace_path or "."
         
-        # Initialize components
-        self.separator = VoiceAISeparator(openai_api_key=self.openai_api_key)
-        self.trainer = VoiceTrainer(workspace_path=self.workspace_path)
-        self.synthesizer = VoiceSynthesizer(workspace_path=self.workspace_path)
+        # Initialize components directly
+        self.audio_processor = AudioProcessor()
+        self.voice_separator = VoiceSeparator(openai_api_key)
+        self.trainer = VoiceTrainer()
+        self.synthesizer = VoiceSynthesizer()
         
         print("🚀 Voice AI Processor initialized")
         print(f"📁 Workspace: {self.workspace_path}")
@@ -49,7 +50,7 @@ class VoiceAIProcessor:
         Returns:
             List of saved audio file paths
         """
-        return self.separator.separate_audio(input_path, output_dir, **kwargs)
+        return self.voice_separator.separate_audio(input_path, output_dir, **kwargs)
     
     def extract_time_range(self, 
                           input_path: str, 
@@ -68,7 +69,7 @@ class VoiceAIProcessor:
         Returns:
             Path to the extracted audio file
         """
-        return self.separator.extract_time_range(input_path, start_minutes, end_minutes, output_path)
+        return self.audio_processor.extract_time_range(input_path, start_minutes, end_minutes, output_path)
     
     def separate_channels(self, input_path: str, output_dir: str = None) -> Dict[str, str]:
         """
@@ -81,7 +82,7 @@ class VoiceAIProcessor:
         Returns:
             Dictionary with 'left' and 'right' keys containing file paths
         """
-        return self.separator.separate_channels(input_path, output_dir)
+        return self.audio_processor.separate_channels(input_path, output_dir)
     
     def detect_voice_activity(self, input_path: str, min_voice_threshold: float = 0.02, 
                              min_voice_ratio: float = 0.3) -> Dict:
@@ -96,7 +97,7 @@ class VoiceAIProcessor:
         Returns:
             Dictionary with voice activity analysis results
         """
-        return self.separator.detect_voice_activity(input_path, min_voice_threshold, min_voice_ratio)
+        return self.audio_processor.detect_voice_activity(input_path, min_voice_threshold, min_voice_ratio)
     
     def filter_audio_by_voice_activity(self, input_paths: List[str], output_dir: str = None,
                                       min_voice_threshold: float = 0.02, 
@@ -113,7 +114,7 @@ class VoiceAIProcessor:
         Returns:
             List of paths to files with sufficient voice activity
         """
-        return self.separator.filter_audio_by_voice_activity(
+        return self.audio_processor.filter_audio_by_voice_activity(
             input_paths, output_dir, min_voice_threshold, min_voice_ratio)
     
     # Training Methods
