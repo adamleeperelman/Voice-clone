@@ -2,7 +2,6 @@
 """
 Voice Separator Module
 Complete voice separation functionality using Whisper + GPT
-Combines preprocessing and core separation in one unified class
 """
 
 import os
@@ -31,8 +30,8 @@ def load_whisper():
 
 class VoiceSeparator:
     """
-    Unified Voice Separator
-    Complete voice separation functionality with preprocessing and speaker analysis
+    Voice Separation functionality
+    Separates audio files by speakers using Whisper + GPT
     """
     
     def __init__(self, openai_api_key: Optional[str] = None):
@@ -119,13 +118,25 @@ class VoiceSeparator:
                 if current_segment is None:
                     current_segment = segment
                 else:
-                    current_segment += segment
+                    if len(current_segment) + segment_len <= max_len:
+                        current_segment += segment
+                    else:
+                        if len(current_segment) >= min_len:
+                            optimized.append(current_segment)
+                        current_segment = segment
             else:
                 # Segment is good length
                 if current_segment:
-                    optimized.append(current_segment)
-                    current_segment = None
-                optimized.append(segment)
+                    if len(current_segment) + segment_len <= max_len:
+                        optimized.append(current_segment + segment)
+                        current_segment = None
+                    else:
+                        if len(current_segment) >= min_len:
+                            optimized.append(current_segment)
+                        optimized.append(segment)
+                        current_segment = None
+                else:
+                    optimized.append(segment)
         
         # Don't forget the last segment
         if current_segment and len(current_segment) >= min_len:
@@ -190,7 +201,7 @@ class VoiceSeparator:
                 os.remove(temp_path)
                 
                 if i % 10 == 0:
-                    print(f"   Transcribed {i+1}/{len(segments)} segments...")
+                    print(f"   Processed {i+1}/{len(segments)} segments")
                     
             except Exception as e:
                 print(f"⚠️  Error transcribing segment {i}: {e}")
@@ -492,23 +503,23 @@ class VoiceSeparator:
         
         for speaker, indices in speaker_assignments.items():
             analysis_file = os.path.join(analysis_dir, f"{speaker}_analysis.json")
-            speaker_data = {
-                'speaker_name': speaker,
-                'total_segments': len(indices),
-                'total_duration': sum(transcription_lookup[idx]['duration'] for idx in indices if idx in transcription_lookup),
-                'average_confidence': sum(transcription_lookup[idx]['avg_logprob'] for idx in indices if idx in transcription_lookup) / len(indices) if indices else 0,
-                'segments': [
-                    {
-                        'index': idx,
-                        'text': transcription_lookup[idx]['text'],
-                        'duration': transcription_lookup[idx]['duration'],
-                        'confidence': transcription_lookup[idx]['avg_logprob']
-                    }
-                    for idx in indices if idx in transcription_lookup
-                ]
-            }
-            
             with open(analysis_file, 'w') as f:
+                speaker_data = {
+                    'speaker_name': speaker,
+                    'total_segments': len(indices),
+                    'total_duration': sum(transcription_lookup[idx]['duration'] for idx in indices if idx in transcription_lookup),
+                    'average_confidence': sum(transcription_lookup[idx]['avg_logprob'] for idx in indices if idx in transcription_lookup) / len(indices) if indices else 0,
+                    'segments': [
+                        {
+                            'index': idx,
+                            'text': transcription_lookup[idx]['text'],
+                            'duration': transcription_lookup[idx]['duration'],
+                            'confidence': transcription_lookup[idx]['avg_logprob']
+                        }
+                        for idx in indices if idx in transcription_lookup
+                    ]
+                }
+                
                 json.dump(speaker_data, f, indent=2)
         
         print(f"🎉 Voice separation complete!")

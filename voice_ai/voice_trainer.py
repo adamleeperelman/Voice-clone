@@ -178,11 +178,31 @@ class VoiceTrainer:
         
         return metadata
     
-    def validate_training_data(self, training_dir: str = "F5_TTS/finetune_data") -> Dict:
+    def validate_training_data(self, training_dir: str = None) -> Dict:
         """Validate training data for F5-TTS compatibility"""
+        if training_dir is None:
+            # Auto-detect training directory by looking for common patterns
+            possible_dirs = [
+                "05_training_data",  # Pipeline generated
+                "F5_TTS/finetune_data",  # Default F5-TTS location
+                "training_data"  # Generic fallback
+            ]
+            training_path = None
+            for dir_name in possible_dirs:
+                candidate = Path(self.workspace_path) / dir_name
+                if candidate.exists() and (candidate / "metadata.json").exists():
+                    training_path = candidate
+                    training_dir = dir_name
+                    break
+            
+            if training_path is None:
+                # Default to F5_TTS path even if it doesn't exist
+                training_path = Path(self.workspace_path) / "F5_TTS/finetune_data"
+                training_dir = "F5_TTS/finetune_data"
+        else:
+            training_path = Path(self.workspace_path) / training_dir
+            
         print(f"🔍 Validating training data in: {training_dir}")
-        
-        training_path = Path(self.workspace_path) / training_dir
         
         # Check required files
         required_files = ["metadata.json", "filelist.txt"]
@@ -345,9 +365,27 @@ except Exception as e:
             "note": "Actual fine-tuning requires F5-TTS specific implementation"
         }
     
-    def get_training_status(self, training_dir: str = "F5_TTS/finetune_data") -> Dict:
+    def get_training_status(self, training_dir: str = None) -> Dict:
         """Get status of training data and fine-tuning progress"""
-        training_path = Path(self.workspace_path) / training_dir
+        if training_dir is None:
+            # Auto-detect training directory by looking for common patterns
+            possible_dirs = [
+                "05_training_data",  # Pipeline generated
+                "F5_TTS/finetune_data",  # Default F5-TTS location
+                "training_data"  # Generic fallback
+            ]
+            training_path = None
+            for dir_name in possible_dirs:
+                candidate = Path(self.workspace_path) / dir_name
+                if candidate.exists() and (candidate / "metadata.json").exists():
+                    training_path = candidate
+                    break
+            
+            if training_path is None:
+                # Default to F5_TTS path even if it doesn't exist
+                training_path = Path(self.workspace_path) / "F5_TTS/finetune_data"
+        else:
+            training_path = Path(self.workspace_path) / training_dir
         
         status = {
             "training_dir_exists": training_path.exists(),

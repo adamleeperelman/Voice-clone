@@ -117,6 +117,68 @@ class VoiceAIProcessor:
         return self.audio_processor.filter_audio_by_voice_activity(
             input_paths, output_dir, min_voice_threshold, min_voice_ratio)
     
+    def extract_voice_segments(self, 
+                              input_path: str, 
+                              output_dir: str = "voice_segments",
+                              min_duration: float = 2.0,
+                              silence_len: int = 1000,
+                              silence_thresh: int = -35,
+                              min_segment_len: float = 2.0,
+                              max_segment_len: float = 20.0,
+                              **kwargs) -> List[str]:
+        """
+        Extract voice segments from audio (single speaker)
+        
+        Args:
+            input_path: Path to input audio file
+            output_dir: Directory to save voice segments
+            min_duration: Minimum segment duration in seconds
+            silence_len: Minimum silence length in ms
+            silence_thresh: Silence threshold in dB
+            min_segment_len: Minimum segment length in seconds
+            max_segment_len: Maximum segment length in seconds
+            **kwargs: Additional parameters for segmentation
+        
+        Returns:
+            List of saved audio segment file paths
+        """
+        # Convert duration parameters to milliseconds for voice separator
+        min_segment_len_ms = int(min_segment_len * 1000)
+        max_segment_len_ms = int(max_segment_len * 1000)
+        
+        # Use the voice separator's extract_segments method for segmentation
+        segments_data, original_audio = self.voice_separator.extract_segments(
+            input_path, 
+            min_silence_len=silence_len,
+            silence_thresh=silence_thresh,
+            min_segment_len=min_segment_len_ms,
+            max_segment_len=max_segment_len_ms
+        )
+        
+        # Create output directory
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save all segments with sequential naming
+        saved_files = []
+        for i, segment_audio in enumerate(segments_data, 1):
+            # Calculate duration
+            duration = len(segment_audio) / 1000.0  # Convert ms to seconds
+            
+            # Only save segments that meet minimum duration
+            if duration >= min_duration:
+                segment_file = output_path / f"segment_{i:03d}_{duration:.1f}s.wav"
+                
+                # Save the audio segment
+                segment_audio.export(str(segment_file), format="wav")
+                saved_files.append(str(segment_file))
+                
+                print(f"💾 Saved segment {i}: {segment_file.name} ({duration:.1f}s)")
+            else:
+                print(f"⏩ Skipped segment {i}: {duration:.1f}s (too short)")
+        
+        return saved_files
+    
     # Training Methods
     def prepare_training_data(self, 
                             source_dir: str, 

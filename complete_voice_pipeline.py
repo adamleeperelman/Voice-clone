@@ -48,6 +48,42 @@ def log_step(project_dir: Path, step: str, message: str):
     
     print(f"📝 {step}: {message}")
 
+def validate_step_output(output_path: Path, expected_type: str = "files", min_count: int = 1) -> bool:
+    """
+    Validate that a pipeline step produced the expected output
+    
+    Args:
+        output_path: Path to check for output
+        expected_type: "files", "directories", or "any"
+        min_count: Minimum number of items expected
+        
+    Returns:
+        bool: True if validation passes, False otherwise
+    """
+    if not output_path.exists():
+        return False
+    
+    if expected_type == "files":
+        items = list(output_path.glob("*.wav")) + list(output_path.glob("*.mp3"))
+    elif expected_type == "directories":
+        items = [p for p in output_path.iterdir() if p.is_dir()]
+    else:  # "any"
+        items = list(output_path.iterdir())
+    
+    return len(items) >= min_count
+
+def check_speaker_directories(base_path: Path) -> dict:
+    """Check if speaker directories exist and contain files"""
+    results = {}
+    for speaker in ["left_speaker", "right_speaker"]:
+        speaker_path = base_path / speaker
+        if speaker_path.exists():
+            wav_files = list(speaker_path.glob("*.wav"))
+            results[speaker] = len(wav_files)
+        else:
+            results[speaker] = 0
+    return results
+
 def main():
     """Main pipeline execution"""
     
@@ -85,7 +121,23 @@ def main():
             end_minutes=EXTRACT_END,
             output_path=str(extracted_audio_path)
         )
-        log_step(project_dir, "EXTRACT", f"Extracted {EXTRACT_END} minutes to {extracted_file}")
+        
+        # Validate extraction output
+        if not os.path.exists(extracted_file):
+            log_step(project_dir, "ERROR", f"Extraction failed - output file not created: {extracted_file}")
+            return
+            
+        # Check file size (should be reasonable for extracted audio)
+        file_size_mb = os.path.getsize(extracted_file) / (1024 * 1024)
+        if file_size_mb < 0.1:  # Less than 100KB seems wrong
+            log_step(project_dir, "ERROR", f"Extracted file too small ({file_size_mb:.1f}MB) - possible extraction failure")
+            return
+            
+        log_step(project_dir, "EXTRACT", f"✅ Extracted {EXTRACT_END} minutes to {extracted_file} ({file_size_mb:.1f}MB)")
+        
+    except Exception as e:
+        log_step(project_dir, "ERROR", f"Audio extraction failed: {e}")
+        return
     except Exception as e:
         log_step(project_dir, "ERROR", f"Time extraction failed: {e}")
         return
@@ -100,54 +152,122 @@ def main():
             input_path=extracted_file,
             output_dir=str(channels_output)
         )
+        
+        # Validate channel separation output
+        channels_valid = True
+        for channel_name in ['left', 'right']:  # Only check actual channel files
+            channel_file = channels[channel_name]
+            if not os.path.exists(channel_file):
+                log_step(project_dir, "ERROR", f"Channel separation failed - {channel_name} channel file not created: {channel_file}")
+                channels_valid = False
+            else:
+                file_size_mb = os.path.getsize(channel_file) / (1024 * 1024)
+                if file_size_mb < 0.05:  # Very small file indicates issue
+                    log_step(project_dir, "ERROR", f"{channel_name.title()} channel file too small ({file_size_mb:.1f}MB)")
+                    channels_valid = False
+                    
+        if not channels_valid:
+            return
+            
         log_step(project_dir, "CHANNELS", f"Channel separation complete")
         log_step(project_dir, "CHANNELS", f"Left channel: {channels['left']}")
         log_step(project_dir, "CHANNELS", f"Right channel: {channels['right']}")
         
-        # Use left channel for speaker separation (as specified in requirements)
+        # Use left channel only (contains the target speaker)
         audio_for_separation = channels['left']
         
     except Exception as e:
         log_step(project_dir, "ERROR", f"Channel separation failed: {e}")
         return
     
-    # Step 5: Separate voices from left channel
-    print(f"\n🎯 Step 4: Separate Voices (Left Channel)")
+    # Step 4: Process left channel to extract voice segments
+    print(f"\n🎯 Step 4: Extract Voice Segments (Left Speaker Only)")
     
     separation_output = project_dir / "03_separated_voices"
+    separated_files = []
     
-    try:
-        separated_files = processor.separate_voices(
-            input_path=audio_for_separation,  # Use left channel
-            output_dir=str(separation_output),
-            min_duration=3.0,      # Slightly lower for more samples
-            min_confidence=-0.6,   # More lenient for more samples
-            silence_len=1500,      # Shorter silence detection
-            min_segment_len=3.0,   # Minimum 6 seconds
-            max_segment_len=20.0,  # Maximum 20 seconds
-            max_no_speech_prob=0.8  # Much more lenient for silence detection
-        )
+    # Define parameter sets from strict to very permissive
+    parameter_sets = [
+        {
+            "name": "Standard",
+            "min_duration": 8.0,
+            "min_confidence": -0.5,
+            "max_no_speech_prob": 0.3,
+            "min_segment_len": 8.0,
+            "silence_len": 2000
+        },
+        {
+            "name": "Relaxed",
+            "min_duration": 3.0,
+            "min_confidence": -0.8,
+            "max_no_speech_prob": 0.6,
+            "min_segment_len": 3.0,
+            "silence_len": 1500
+        },
+        {
+            "name": "Permissive",
+            "min_duration": 1.0,
+            "min_confidence": -1.5,
+            "max_no_speech_prob": 1.0,
+            "min_segment_len": 1.0,
+            "silence_len": 1000
+        },
+        {
+            "name": "Very Permissive",
+            "min_duration": 1.0,
+            "min_confidence": -2.0,
+            "max_no_speech_prob": 2.0,
+            "min_segment_len": 1.0,
+            "silence_len": 1000
+        }
+    ]
+    
+    # Try each parameter set until one succeeds
+    for attempt, params in enumerate(parameter_sets, 1):
+        print(f"\n   🔄 Attempt {attempt}: {params['name']} parameters")
+        log_step(project_dir, "SEPARATION", f"Attempting voice segmentation with {params['name']} parameters")
         
-        if separated_files:
-            log_step(project_dir, "SEPARATION", f"Voice separation complete: {len(separated_files)} files")
+        try:
+            # Extract voice segments from left channel only
+            separated_files = processor.extract_voice_segments(
+                input_path=audio_for_separation,
+                output_dir=str(separation_output / "left_speaker"),
+                min_duration=params["min_duration"],
+                silence_len=params["silence_len"],
+                silence_thresh=-35,
+                min_segment_len=params["min_segment_len"],
+                max_segment_len=20.0
+            )
             
-            # Count files per speaker
-            left_speaker_dir = separation_output / "left_speaker"
-            right_speaker_dir = separation_output / "right_speaker"
-            
-            if left_speaker_dir.exists():
-                left_count = len(list(left_speaker_dir.glob("*.wav")))
-                log_step(project_dir, "SEPARATION", f"Left speaker samples: {left_count}")
-            
-            if right_speaker_dir.exists():
-                right_count = len(list(right_speaker_dir.glob("*.wav")))
-                log_step(project_dir, "SEPARATION", f"Right speaker samples: {right_count}")
-        else:
-            log_step(project_dir, "ERROR", "Voice separation failed - no files generated")
+            # Validate output
+            if separated_files and len(separated_files) > 0:
+                # Check if files actually exist
+                existing_files = [f for f in separated_files if os.path.exists(f)]
+                
+                if existing_files:
+                    log_step(project_dir, "SEPARATION", f"✅ Success with {params['name']} parameters: {len(existing_files)} voice segments")
+                    log_step(project_dir, "SEPARATION", f"Left speaker samples: {len(existing_files)}")
+                    
+                    separated_files = existing_files
+                    break  # Success - exit retry loop
+                else:
+                    log_step(project_dir, "SEPARATION", f"❌ Files reported but don't exist on disk")
+                    separated_files = []
+            else:
+                log_step(project_dir, "SEPARATION", f"❌ No segments generated with {params['name']} parameters")
+                
+        except Exception as e:
+            log_step(project_dir, "SEPARATION", f"❌ Error with {params['name']} parameters: {e}")
+            separated_files = []
+        
+        # If this was the last attempt and still failed
+        if not separated_files and attempt == len(parameter_sets):
+            log_step(project_dir, "ERROR", "All voice separation attempts failed")
             return
-            
-    except Exception as e:
-        log_step(project_dir, "ERROR", f"Voice separation failed: {e}")
+    
+    # Validate we have output before continuing
+    if not separated_files:
+        log_step(project_dir, "ERROR", "Voice separation failed - no files generated after all attempts")
         return
     
     # Step 5: Filter by voice activity (remove low voice or empty sounds)
@@ -156,44 +276,101 @@ def main():
     voice_filtered_output = project_dir / "04_voice_filtered"
     left_speaker_source = separation_output / "left_speaker"
     
-    if not left_speaker_source.exists() or not any(left_speaker_source.glob("*.wav")):
-        log_step(project_dir, "ERROR", "No left speaker samples found for voice filtering")
+    # Validate input exists
+    if not left_speaker_source.exists():
+        log_step(project_dir, "ERROR", f"Left speaker directory not found: {left_speaker_source}")
         return
     
-    try:
-        # Get all left speaker audio files
-        audio_files = list(left_speaker_source.glob("*.wav"))
-        log_step(project_dir, "VOICE_FILTER", f"Analyzing {len(audio_files)} files for voice activity")
+    audio_files = list(left_speaker_source.glob("*.wav"))
+    if not audio_files:
+        log_step(project_dir, "ERROR", f"No WAV files found in {left_speaker_source}")
+        return
+    
+    log_step(project_dir, "VOICE_FILTER", f"Found {len(audio_files)} files for voice activity filtering")
+    
+    # Voice activity filtering parameter sets (from strict to permissive)
+    filter_parameter_sets = [
+        {
+            "name": "Standard",
+            "min_voice_threshold": 0.02,
+            "min_voice_ratio": 0.3
+        },
+        {
+            "name": "Relaxed",
+            "min_voice_threshold": 0.015,
+            "min_voice_ratio": 0.25
+        },
+        {
+            "name": "Permissive",
+            "min_voice_threshold": 0.01,
+            "min_voice_ratio": 0.2
+        },
+        {
+            "name": "Very Permissive",
+            "min_voice_threshold": 0.005,
+            "min_voice_ratio": 0.1
+        }
+    ]
+    
+    filtered_files = []
+    
+    # Try each filter parameter set
+    for attempt, params in enumerate(filter_parameter_sets, 1):
+        print(f"\n   🔄 Voice Filter Attempt {attempt}: {params['name']} parameters")
+        log_step(project_dir, "VOICE_FILTER", f"Attempting voice filtering with {params['name']} parameters")
         
-        # Filter by voice activity
-        filtered_files = processor.filter_audio_by_voice_activity(
-            input_paths=[str(f) for f in audio_files],
-            output_dir=str(voice_filtered_output / "left_speaker"),
-            min_voice_threshold=0.015,  # Lower threshold for more sensitivity
-            min_voice_ratio=0.25       # 25% of frames must have voice activity
-        )
-        
-        if filtered_files:
-            log_step(project_dir, "VOICE_FILTER", f"Voice filtering complete: {len(filtered_files)} files kept from {len(audio_files)}")
-            log_step(project_dir, "VOICE_FILTER", f"Filtered out {len(audio_files) - len(filtered_files)} files with low/no voice activity")
+        try:
+            filtered_files = processor.filter_audio_by_voice_activity(
+                input_paths=[str(f) for f in audio_files],
+                output_dir=str(voice_filtered_output / "left_speaker"),
+                min_voice_threshold=params["min_voice_threshold"],
+                min_voice_ratio=params["min_voice_ratio"]
+            )
             
-            # Update source directory for training data preparation
-            left_speaker_source = voice_filtered_output / "left_speaker"
-        else:
-            log_step(project_dir, "WARNING", "Voice filtering removed all files - continuing with original files")
-            
-    except Exception as e:
-        log_step(project_dir, "ERROR", f"Voice activity filtering failed: {e}")
-        log_step(project_dir, "WARNING", "Continuing with original files")
+            # Validate output
+            if filtered_files and len(filtered_files) > 0:
+                # Check if files actually exist
+                existing_filtered = [f for f in filtered_files if os.path.exists(f)]
+                
+                if existing_filtered:
+                    log_step(project_dir, "VOICE_FILTER", f"✅ Success with {params['name']} parameters: {len(existing_filtered)} files kept from {len(audio_files)}")
+                    log_step(project_dir, "VOICE_FILTER", f"Filtered out {len(audio_files) - len(existing_filtered)} files with low/no voice activity")
+                    
+                    # Update source directory for training data preparation
+                    left_speaker_source = voice_filtered_output / "left_speaker"
+                    filtered_files = existing_filtered
+                    break  # Success - exit retry loop
+                else:
+                    log_step(project_dir, "VOICE_FILTER", f"❌ Files reported but don't exist on disk")
+                    filtered_files = []
+            else:
+                log_step(project_dir, "VOICE_FILTER", f"❌ No files passed {params['name']} filtering")
+                
+        except Exception as e:
+            log_step(project_dir, "VOICE_FILTER", f"❌ Error with {params['name']} parameters: {e}")
+            filtered_files = []
+    
+    # If all filtering attempts failed, continue with original files
+    if not filtered_files:
+        log_step(project_dir, "WARNING", "All voice filtering attempts removed all files - continuing with original separated files")
+        left_speaker_source = separation_output / "left_speaker"
     
     # Step 6: Prepare training data from filtered left speaker
-    print(f"\n🎯 Step 6: Prepare Training Data (Filtered Left Speaker)")
+    print(f"\n🎯 Step 6: Prepare Training Data")
     
     training_output = project_dir / "05_training_data"
     
-    if not left_speaker_source.exists() or not any(left_speaker_source.glob("*.wav")):
-        log_step(project_dir, "ERROR", "No left speaker samples found")
+    # Validate input directory and files
+    if not left_speaker_source.exists():
+        log_step(project_dir, "ERROR", f"Left speaker directory not found: {left_speaker_source}")
         return
+    
+    training_files = list(left_speaker_source.glob("*.wav"))
+    if not training_files:
+        log_step(project_dir, "ERROR", f"No WAV files found for training in {left_speaker_source}")
+        return
+    
+    log_step(project_dir, "TRAINING", f"Found {len(training_files)} files for training data preparation")
     
     try:
         training_metadata = processor.prepare_training_data(
