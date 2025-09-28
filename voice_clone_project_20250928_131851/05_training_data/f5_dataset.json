@@ -1,0 +1,7 @@
+{
+  "dataset_dir": "/Users/adamleeperelman/Documents/LLM/Voice Clone/.venv/lib/python3.13/data/voice_clone_project_20250928_131851_byte",
+  "dataset_name": "voice_clone_project_20250928_131851",
+  "tokenizer": "byte",
+  "num_samples": 32,
+  "total_duration": 538.53
+}
