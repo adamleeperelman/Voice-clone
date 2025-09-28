@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 from importlib.resources import files
-#%%
+
 # Import the voice AI modules
 from voice_ai import create_processor
 
@@ -22,7 +22,7 @@ def create_project_structure(project_name: str = "voice_clone_project") -> Path:
     
     # Create project directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    project_dir = Path(f"{project_name}_{timestamp}")
+    project_dir = Path(f"{project_name}_{timestamp}").resolve()
     
     # Create subdirectories
     subdirs = [
@@ -89,7 +89,7 @@ def check_speaker_directories(base_path: Path) -> dict:
             results[speaker] = 0
     return results
 
-#%%
+
 class VoicePipeline:
     """Voice Cloning Pipeline - Modular execution"""
     
@@ -142,7 +142,39 @@ class VoicePipeline:
         training_dir = project_path / "05_training_data"
         metadata_file = training_dir / "metadata.json"
         wavs_dir = training_dir / "wavs"
-        return metadata_file.exists() or (wavs_dir.exists() and any(wavs_dir.glob("*.wav")))
+        if metadata_file.exists() or (wavs_dir.exists() and any(wavs_dir.glob("*.wav"))):
+            return True
+
+        legacy_dir = project_path / project_path.name / "05_training_data"
+        legacy_metadata = legacy_dir / "metadata.json"
+        legacy_wavs = legacy_dir / "wavs"
+        return legacy_metadata.exists() or (legacy_wavs.exists() and any(legacy_wavs.glob("*.wav")))
+
+    def _ensure_training_data_dir(self) -> Path:
+        """Ensure the training data directory exists and consolidate legacy layouts."""
+
+        if not self.project_dir:
+            raise ValueError("Project directory is not set")
+
+        training_dir = self.project_dir / "05_training_data"
+        legacy_root = self.project_dir / self.project_dir.name
+        legacy_dir = legacy_root / "05_training_data"
+
+        if legacy_dir.exists():
+            training_dir.mkdir(parents=True, exist_ok=True)
+            for item in legacy_dir.iterdir():
+                destination = training_dir / item.name
+                if destination.exists():
+                    continue
+                shutil.move(str(item), str(destination))
+            shutil.rmtree(legacy_dir)
+            try:
+                legacy_root.rmdir()
+            except OSError:
+                pass
+
+        training_dir.mkdir(parents=True, exist_ok=True)
+        return training_dir
 
     def _load_existing_state(self):
         # Reset relevant state before loading
@@ -192,7 +224,7 @@ class VoicePipeline:
             self.filtered_files = list(self.separated_files)
 
         # Training metadata
-        training_dir = self.project_dir / "05_training_data"
+        training_dir = self._ensure_training_data_dir()
         metadata_file = training_dir / "metadata.json"
         if metadata_file.exists():
             try:
@@ -245,7 +277,7 @@ class VoicePipeline:
             self.generated_audio = str(custom_phrase)
 
     def load_existing_project(self, project_path: Union[str, Path]) -> Path:
-        project_path = Path(project_path).expanduser()
+        project_path = Path(project_path).expanduser().resolve()
 
         if not project_path.exists():
             raise ValueError(f"Existing project path not found: {project_path}")
@@ -580,55 +612,52 @@ class VoicePipeline:
             raise ValueError("Must call step6_filter_voice_activity() or step5_extract_voice_segments() first")
         
         print(f"\n🎯 Step 7: Prepare Training Data")
-        
-        training_output = self.project_dir / "05_training_data"
-        
-        # Use filtered files if available, otherwise use separated files
-        source_files = self.filtered_files if self.filtered_files else self.separated_files
-        
+
+        training_output = self._ensure_training_data_dir()
+
         # Determine source directory
         if self.filtered_files:
             left_speaker_source = self.project_dir / "04_voice_filtered" / "left_speaker"
         else:
             left_speaker_source = self.project_dir / "03_separated_voices" / "left_speaker"
-        
+
         # Validate input directory and files
         if not left_speaker_source.exists():
             log_step(self.project_dir, "ERROR", f"Left speaker directory not found: {left_speaker_source}")
             return None
-        
+
         training_files = list(left_speaker_source.glob("*.wav"))
         if not training_files:
             log_step(self.project_dir, "ERROR", f"No WAV files found for training in {left_speaker_source}")
             return None
-        
+
         log_step(self.project_dir, "TRAINING", f"Found {len(training_files)} files for training data preparation")
-        
+
         try:
             self.training_metadata = self.processor.prepare_training_data(
                 source_dir=str(left_speaker_source),
-                output_dir=str(training_output),
+                output_dir="05_training_data",
                 speaker_name="main_speaker"
             )
-            
+
             if self.training_metadata:
                 log_step(self.project_dir, "TRAINING_PREP", f"Training data prepared: {self.training_metadata['total_samples']} samples")
                 log_step(self.project_dir, "TRAINING_PREP", f"Total duration: {self.training_metadata['total_duration']:.1f} seconds")
-                
+
                 # Validate training data
-                validation = self.processor.validate_training_data(str(training_output))
+                validation = self.processor.validate_training_data("05_training_data")
                 if validation.get("valid", True):
                     log_step(self.project_dir, "VALIDATION", f"Training data validation passed: {validation['total_samples']} samples")
                     if validation.get("issues"):
                         log_step(self.project_dir, "VALIDATION", f"Minor issues found: {len(validation['issues'])}")
                 else:
                     log_step(self.project_dir, "WARNING", f"Training data validation issues: {validation.get('errors', 'Unknown')}")
-                    
+
                 return self.training_metadata
             else:
                 log_step(self.project_dir, "ERROR", "Training data preparation failed")
                 return None
-                
+
         except Exception as e:
             log_step(self.project_dir, "ERROR", f"Training data preparation failed: {e}")
             return None
@@ -641,7 +670,7 @@ class VoicePipeline:
         
         print(f"\n🎯 Step 8: Fine-tune Voice Model")
         
-        training_output = self.project_dir / "05_training_data"
+        training_output = self._ensure_training_data_dir()
         models_output = self.project_dir / "06_models"
         models_output.mkdir(exist_ok=True)
         
@@ -675,7 +704,7 @@ class VoicePipeline:
 
         try:
             dataset_info = self.processor.prepare_f5_dataset(
-                training_dir=str(training_output),
+                training_dir="05_training_data",
                 dataset_name=dataset_seed,
                 tokenizer="byte",
                 refresh=True
@@ -975,7 +1004,6 @@ class VoicePipeline:
         
         return report
 
-#%%
 # %%
 # Example: Run the complete pipeline
 # pipeline = VoicePipeline()
@@ -1017,5 +1045,3 @@ if __name__ == "__main__":
 
     # Step 11: Generate report
     pipeline.step11_generate_report()
-
-# %%

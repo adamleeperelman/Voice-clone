@@ -1,0 +1,60 @@
+{
+  "project_info": {
+    "name": "voice_clone_project_20250928_131222",
+    "created": "2025-09-28T13:14:41.571332",
+    "input_audio": "/Users/adamleeperelman/Documents/LLM/Voice Clone/Raw_Sample/recording.mp3",
+    "time_range": "0-15 minutes"
+  },
+  "pipeline_results": {
+    "audio_extraction": {
+      "success": true,
+      "output_file": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20250928_131222/01_extracted_audio/recording_0m_to_15m.mp3"
+    },
+    "voice_separation": {
+      "success": true,
+      "files_generated": 32,
+      "left_speaker_samples": 0,
+      "right_speaker_samples": 0
+    },
+    "training_preparation": {
+      "success": true,
+      "total_samples": 32,
+      "total_duration": 538.53
+    },
+    "voice_synthesis": {
+      "test_files_generated": 0,
+      "custom_phrase_generated": false
+    }
+  },
+  "workspace_status": {
+    "workspace_path": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20250928_131222",
+    "separation": {
+      "samples_directory_exists": false
+    },
+    "training": {
+      "training_dir_exists": true,
+      "training_data_prepared": true,
+      "total_samples": 32,
+      "total_duration": 538.53,
+      "validation_status": {
+        "valid": true,
+        "total_samples": 32,
+        "total_duration": 538.53,
+        "issues": []
+      },
+      "checkpoints_exist": false
+    },
+    "synthesis": {
+      "f5_tts_available": true,
+      "available_models": [
+        "F5-TTS",
+        "E2-TTS",
+        "custom"
+      ],
+      "reference_audio_found": true,
+      "generated_audio_count": 0,
+      "reference_audio_path": "/Users/adamleeperelman/Documents/LLM/Voice Clone/ai_voice_samples/left_speaker/AI_001_8.3s_q7.wav"
+    }
+  },
+  "test_phrase": "Hello, this is a test of the fine-tuned voice model using multiple training samples for high quality synthesis."
+}
