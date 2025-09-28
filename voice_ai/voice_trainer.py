@@ -6,12 +6,20 @@ Handles F5-TTS training data preparation and fine-tuning
 
 import os
 import json
+import re
+import shutil
 import subprocess
 import sys
+from importlib.resources import files
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import warnings
 warnings.filterwarnings("ignore")
+
+try:
+    from datasets import Dataset
+except ImportError:  # pragma: no cover - datasets should ship with f5-tts
+    Dataset = None
 
 # Import whisper safely
 def load_whisper():
@@ -33,6 +41,7 @@ class VoiceTrainer:
         """Initialize the Voice Trainer"""
         self.workspace_path = workspace_path or os.getcwd()
         self.whisper_model = None
+        self._f5_data_root: Optional[Path] = None
         print("🎯 Voice Trainer initialized")
     
     def load_whisper_model(self, model_size: str = "base") -> object:
@@ -54,6 +63,136 @@ class VoiceTrainer:
                 audio_files.append(str(file_path))
         
         return sorted(audio_files)
+
+    # ------------------------------------------------------------------
+    # F5-TTS dataset preparation helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_f5_data_root(self) -> Path:
+        """Locate the data directory used by F5-TTS for custom datasets."""
+
+        if self._f5_data_root and self._f5_data_root.exists():
+            return self._f5_data_root
+
+        try:
+            base_path = Path(files("f5_tts").joinpath("../../data")).resolve()
+        except Exception:
+            base_path = Path(self.workspace_path) / "F5_TTS" / "data"
+
+        base_path.mkdir(parents=True, exist_ok=True)
+        self._f5_data_root = base_path
+        return self._f5_data_root
+
+    def _normalise_dataset_name(self, raw_name: str) -> str:
+        """Convert an arbitrary string into a filesystem-safe dataset identifier."""
+
+        cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", raw_name.strip()) or "custom_dataset"
+        cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+        return cleaned.lower() or "custom_dataset"
+
+    def prepare_f5_dataset(
+        self,
+        training_dir: str,
+        dataset_name: str,
+        tokenizer: str = "byte",
+        refresh: bool = True,
+    ) -> Dict[str, str]:
+        """Export training data into the HuggingFace dataset format expected by F5-TTS."""
+
+        if Dataset is None:
+            raise RuntimeError(
+                "🤖 The 'datasets' package is required to build F5 datasets. Install it with `pip install datasets`."
+            )
+
+        training_path = Path(training_dir)
+        if not training_path.exists():
+            candidate = Path(self.workspace_path) / training_dir
+            if candidate.exists():
+                training_path = candidate
+        metadata_path = training_path / "metadata.json"
+
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"Training metadata not found at {metadata_path}")
+
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        samples = metadata.get("samples", [])
+        if not samples:
+            raise ValueError("Training metadata contains no samples to export")
+
+        dataset_entries: List[Dict[str, object]] = []
+        durations: List[float] = []
+        skipped = 0
+
+        for sample in samples:
+            audio_rel = sample.get("audio_path")
+            text = sample.get("text", "") or ""
+            duration = float(sample.get("duration", 0.0))
+
+            if not audio_rel:
+                skipped += 1
+                continue
+
+            audio_path = (training_path / audio_rel).resolve()
+            if not audio_path.exists():
+                skipped += 1
+                continue
+
+            dataset_entries.append(
+                {
+                    "audio_path": str(audio_path),
+                    "text": text,
+                    "duration": duration,
+                }
+            )
+            durations.append(duration)
+
+        if not dataset_entries:
+            raise ValueError("No training samples with valid audio paths were found")
+
+        if skipped:
+            print(f"⚠️  Skipped {skipped} samples without valid audio")
+
+        dataset_id = self._normalise_dataset_name(dataset_name)
+        data_root = self._resolve_f5_data_root()
+        dataset_dir = data_root / f"{dataset_id}_{tokenizer}"
+
+        if refresh and dataset_dir.exists():
+            shutil.rmtree(dataset_dir)
+
+        raw_dir = dataset_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"🧱 Building F5 dataset: {dataset_dir}")
+        ds = Dataset.from_list(dataset_entries)
+        ds.save_to_disk(str(raw_dir))
+
+        duration_payload = {"duration": durations}
+        with open(dataset_dir / "duration.json", "w", encoding="utf-8") as f:
+            json.dump(duration_payload, f, indent=2)
+
+        manifest = {
+            "dataset_name": dataset_id,
+            "tokenizer": tokenizer,
+            "source_metadata": str(metadata_path),
+            "num_samples": len(dataset_entries),
+            "skipped_samples": skipped,
+        }
+        with open(dataset_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+        print(
+            f"✅ F5 dataset ready: {dataset_dir} (samples={len(dataset_entries)}, tokenizer={tokenizer})"
+        )
+
+        return {
+            "dataset_dir": str(dataset_dir),
+            "dataset_name": dataset_id,
+            "tokenizer": tokenizer,
+            "num_samples": len(dataset_entries),
+            "total_duration": float(sum(durations)),
+        }
     
     def transcribe_audio_file(self, audio_path: str) -> str:
         """Transcribe a single audio file using Whisper"""

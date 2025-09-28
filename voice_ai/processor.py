@@ -28,7 +28,7 @@ class VoiceAIProcessor:
         # Initialize components directly
         self.audio_processor = AudioProcessor()
         self.voice_separator = VoiceSeparator(openai_api_key)
-        self.trainer = VoiceTrainer()
+        self.trainer = VoiceTrainer(workspace_path=self.workspace_path)
         self.synthesizer = VoiceSynthesizer()
         
         print("🚀 Voice AI Processor initialized")
@@ -196,6 +196,22 @@ class VoiceAIProcessor:
             Training data metadata
         """
         return self.trainer.prepare_training_data(source_dir, output_dir, speaker_name)
+
+    def prepare_f5_dataset(
+        self,
+        training_dir: str,
+        dataset_name: str,
+        tokenizer: str = "byte",
+        refresh: bool = True,
+    ) -> Dict[str, str]:
+        """Convert prepared training data into F5-TTS compatible dataset format."""
+
+        return self.trainer.prepare_f5_dataset(
+            training_dir=training_dir,
+            dataset_name=dataset_name,
+            tokenizer=tokenizer,
+            refresh=refresh,
+        )
     
     def fine_tune_model(self, 
                        training_dir: str = "F5_TTS/finetune_data",

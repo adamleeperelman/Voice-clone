@@ -8,11 +8,9 @@ End-to-end script using the modular Voice AI system
 import os
 import sys
 import json
-import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Union
-from importlib.resources import files
 #%%
 # Import the voice AI modules
 from voice_ai import create_processor
@@ -113,7 +111,6 @@ class VoicePipeline:
         self.generated_audio = None
         self.finetuned_model_dir = None
         self.finetuned_model_checkpoint = None
-        self.f5_dataset_info = None
         
         if project_dir:
             self.load_existing_project(project_dir)
@@ -220,14 +217,6 @@ class VoicePipeline:
                         for path in wav_files
                     ]
                 }
-
-        dataset_manifest = training_dir / "f5_dataset.json"
-        if dataset_manifest.exists():
-            try:
-                with open(dataset_manifest, "r", encoding="utf-8") as f:
-                    self.f5_dataset_info = json.load(f)
-            except json.JSONDecodeError:
-                self.f5_dataset_info = None
 
         # Existing fine-tuned models (if any)
         models_dir = self.project_dir / "06_models"
@@ -648,137 +637,109 @@ class VoicePipeline:
         # Check what training data we have
         training_files = list((training_output / "wavs").glob("*.wav"))
         log_step(self.project_dir, "FINETUNE", f"Training data available: {len(training_files)} audio files")
-
-        def _base_model_response(note: str, success: bool = True, error: Optional[str] = None):
+        
+        if use_base_model:
             log_step(self.project_dir, "FINETUNE", "⚠️  Using F5-TTS Base model (no fine-tuning)")
-            log_step(self.project_dir, "FINETUNE", f"💡 {note}")
+            log_step(self.project_dir, "FINETUNE", "💡 Fine-tuning requires custom dataset implementation")
+            
+            # Create a mock fine-tuning result for pipeline continuity
             self.finetuned_model_dir = None
             self.finetuned_model_checkpoint = None
-            response = {
-                "success": success,
-                "message": "Using base F5-TTS model (no fine-tuning performed)" if success else "Training failed - using base model",
+            return {
+                "success": True,
+                "message": "Using base F5-TTS model (no fine-tuning performed)",
                 "model_used": "F5TTS_Base",
-                "training_data_prepared": len(training_files)
+                "training_data_prepared": len(training_files),
+                "note": "Fine-tuning skipped - using pre-trained base model"
             }
-            if success:
-                response["note"] = note
-            if error:
-                response["error"] = error
-            return response
-
-        if use_base_model:
-            return _base_model_response("Fine-tuning skipped per configuration")
-
-        # Export dataset in the format expected by F5-TTS
-        dataset_manifest = training_output / "f5_dataset.json"
-        dataset_seed = self.project_dir.name if self.project_dir else "voice_clone_project"
-
-        try:
-            dataset_info = self.processor.prepare_f5_dataset(
-                training_dir=str(training_output),
-                dataset_name=dataset_seed,
-                tokenizer="byte",
-                refresh=True
-            )
-            self.f5_dataset_info = dataset_info
-            with open(dataset_manifest, "w", encoding="utf-8") as f:
-                json.dump(dataset_info, f, indent=2)
-
-            log_step(
-                self.project_dir,
-                "FINETUNE",
-                (
-                    f"Dataset exported for F5-TTS: {dataset_info['dataset_name']} "
-                    f"(samples={dataset_info['num_samples']}, tokenizer={dataset_info['tokenizer']})"
-                )
-            )
-        except Exception as e:
-            log_step(self.project_dir, "FINETUNE", f"❌ Dataset export failed: {e}")
-            return _base_model_response("Dataset export failed; using base model", success=False, error=str(e))
-
+        
         # Attempt actual F5-TTS training
         log_step(self.project_dir, "FINETUNE", "🔬 Attempting F5-TTS fine-tuning...")
-
+        
         try:
+            # Try Python API training
             from f5_tts.train.train import main as train_main
             from omegaconf import OmegaConf
-
-            base_config_path = files("f5_tts").joinpath("configs/F5TTS_Base.yaml")
-            config = OmegaConf.load(str(base_config_path))
-
-            config.model.tokenizer = dataset_info["tokenizer"]
-            config.datasets.name = dataset_info["dataset_name"]
-            config.datasets.batch_size_type = "sample"
-            config.datasets.batch_size_per_gpu = 2 if quick_test else 6
-            config.datasets.num_workers = 2 if quick_test else 8
-            config.datasets.max_samples = 0
-
-            config.optim.epochs = 1 if quick_test else 10
-            config.optim.learning_rate = 2e-5 if quick_test else 7.5e-5
-            config.optim.grad_accumulation_steps = 1
-            config.optim.num_warmup_updates = max(10, len(training_files) * 2)
-            config.optim.bnb_optimizer = False
-
-            config.ckpts.logger = None
-            config.ckpts.log_samples = False
-            config.ckpts.save_per_updates = max(10, len(training_files))
-            config.ckpts.last_per_updates = max(10, len(training_files))
-            config.ckpts.keep_last_n_checkpoints = 2
-            config.ckpts.save_dir = f"ckpts/{self.project_dir.name}"
-            hydra_run_dir = (models_output / f"hydra_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}").resolve()
-            config.hydra.run.dir = str(hydra_run_dir)
-
-            log_step(
-                self.project_dir,
-                "FINETUNE",
-                f"Starting training: epochs={config.optim.epochs}, lr={config.optim.learning_rate}, batch={config.datasets.batch_size_per_gpu}"
-            )
-
+            
+            # Create a basic config for our custom dataset
+            config_dict = {
+                "model": {
+                    "name": "F5TTS_Base",
+                    "tokenizer": "pinyin",
+                    "backbone": "DiT",
+                    "arch": {
+                        "dim": 1024,
+                        "depth": 22,
+                        "heads": 16,
+                        "ff_mult": 2,
+                        "text_dim": 512,
+                        "conv_layers": 4
+                    },
+                    "mel_spec": {
+                        "n_mel_channels": 100,
+                        "hop_length": 256,
+                        "win_length": 1024
+                    }
+                },
+                "datasets": {
+                    "name": str(training_output),  # Use our training directory
+                    "batch_size_per_gpu": 2 if quick_test else 8,
+                    "num_workers": 1
+                },
+                "optim": {
+                    "epochs": 1 if quick_test else 10,
+                    "learning_rate": 1e-5,
+                    "grad_accumulation_steps": 1
+                },
+                "ckpts": {
+                    "save_per_updates": 10 if quick_test else 100,
+                    "save_dir": str(models_output)
+                }
+            }
+            
+            config = OmegaConf.create(config_dict)
+            log_step(self.project_dir, "FINETUNE", f"Starting training with config: epochs={config.optim.epochs}, lr={config.optim.learning_rate}")
+            
+            # This will likely fail without proper dataset loader, but let's try
             train_main(config)
-
+            
             log_step(self.project_dir, "FINETUNE", "✅ F5-TTS training completed!")
 
-            ckpt_root = Path(files("f5_tts").joinpath(f"../../{config.ckpts.save_dir}"))
-            project_ckpt_dir = models_output / "f5_tts"
-            project_ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-            copied_files: List[Path] = []
-            if ckpt_root.exists():
-                for ckpt in ckpt_root.glob("*.pt"):
-                    destination = project_ckpt_dir / ckpt.name
-                    shutil.copy2(ckpt, destination)
-                    copied_files.append(destination)
-                for ckpt in ckpt_root.glob("*.safetensors"):
-                    destination = project_ckpt_dir / ckpt.name
-                    shutil.copy2(ckpt, destination)
-                    copied_files.append(destination)
-
-            best_checkpoint_path = None
-            if copied_files:
-                best_checkpoint_path = max(copied_files, key=lambda p: p.stat().st_mtime)
-                log_step(self.project_dir, "FINETUNE", f"Checkpoint available: {best_checkpoint_path}")
+            checkpoint_files = list(models_output.rglob("*.pt")) + list(models_output.rglob("*.safetensors"))
+            best_checkpoint = None
+            if checkpoint_files:
+                best_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
+                log_step(self.project_dir, "FINETUNE", f"Checkpoint saved: {best_checkpoint}")
             else:
-                log_step(self.project_dir, "FINETUNE", "⚠️  No checkpoint files copied to project directory")
+                log_step(self.project_dir, "FINETUNE", "⚠️  No checkpoint files detected after training")
 
-            self.finetuned_model_dir = str(project_ckpt_dir)
-            self.finetuned_model_checkpoint = str(best_checkpoint_path) if best_checkpoint_path else None
-
+            self.finetuned_model_dir = str(models_output)
+            self.finetuned_model_checkpoint = str(best_checkpoint) if best_checkpoint else None
             return {
                 "success": True,
                 "message": "F5-TTS training completed",
                 "model_used": "F5TTS_Custom",
                 "epochs": config.optim.epochs,
-                "dataset": dataset_info,
                 "checkpoint_dir": self.finetuned_model_dir,
                 "checkpoint_file": self.finetuned_model_checkpoint
             }
-
+            
         except ImportError as e:
             log_step(self.project_dir, "FINETUNE", f"❌ Training imports failed: {e}")
-            return _base_model_response("F5-TTS training modules unavailable", success=False, error=str(e))
         except Exception as e:
             log_step(self.project_dir, "FINETUNE", f"❌ Training failed: {e}")
-            return _base_model_response("Fine-tuning encountered an error", success=False, error=str(e))
+            log_step(self.project_dir, "FINETUNE", "💡 This is expected - F5-TTS training requires custom dataset implementation")
+        
+        # If training fails, fall back to base model
+        log_step(self.project_dir, "FINETUNE", "⚠️  Training failed - falling back to base model")
+        self.finetuned_model_dir = None
+        self.finetuned_model_checkpoint = None
+        return {
+            "success": False,
+            "message": "Training failed - using base model",
+            "model_used": "F5TTS_Base",
+            "error": "Custom dataset implementation required for fine-tuning"
+        }
     
     
     def step9_test_voice_cloning(self):
@@ -981,41 +942,40 @@ class VoicePipeline:
 # pipeline = VoicePipeline()
 # pipeline.run_complete_pipeline()
 
-if __name__ == "__main__":
-    # Example: Run individual steps
-    pipeline = VoicePipeline()
+# Example: Run individual steps
+pipeline = VoicePipeline()
 
-    # Step 1: Create project structure
-    pipeline.step1_create_project()
+# Step 1: Create project structure
+pipeline.step1_create_project()
 
-    # Step 2: Initialize processor
-    pipeline.step2_initialize_processor()
+# Step 2: Initialize processor
+pipeline.step2_initialize_processor()
 
-    # Step 3: Extract audio range
-    pipeline.step3_extract_audio()
+# Step 3: Extract audio range
+pipeline.step3_extract_audio()
 
-    # Step 4: Separate stereo channels
-    pipeline.step4_separate_channels()
+# Step 4: Separate stereo channels
+pipeline.step4_separate_channels()
 
-    # Step 5: Extract voice segments
-    pipeline.step5_extract_voice_segments()
+# Step 5: Extract voice segments
+pipeline.step5_extract_voice_segments()
 
-    # Step 6: Filter by voice activity
-    pipeline.step6_filter_voice_activity()
+# Step 6: Filter by voice activity
+pipeline.step6_filter_voice_activity()
 
-    # Step 7: Prepare training data
-    pipeline.step7_prepare_training_data()
+# Step 7: Prepare training data
+pipeline.step7_prepare_training_data()
 
-    # Step 8: Fine-tune model
-    pipeline.step8_fine_tune_model()
+# Step 8: Fine-tune model
+pipeline.step8_fine_tune_model()
 
-    # Step 9: Test voice cloning
-    pipeline.step9_test_voice_cloning()
+# Step 9: Test voice cloning
+pipeline.step9_test_voice_cloning()
 
-    # Step 10: Synthesize custom phrase
-    pipeline.step10_synthesize_custom_phrase()
+# Step 10: Synthesize custom phrase
+pipeline.step10_synthesize_custom_phrase()
 
-    # Step 11: Generate report
-    pipeline.step11_generate_report()
+# Step 11: Generate report
+pipeline.step11_generate_report()
 
 # %%
