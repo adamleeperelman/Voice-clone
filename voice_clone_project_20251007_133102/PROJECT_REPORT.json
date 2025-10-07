@@ -1,14 +1,14 @@
 {
   "project_info": {
-    "name": "voice_clone_project_20251005_203311",
-    "created": "2025-10-05T20:37:08.295051",
+    "name": "voice_clone_project_20251007_133102",
+    "created": "2025-10-07T13:34:51.695156",
     "input_audio": "/Users/adamleeperelman/Documents/LLM/Voice Clone/Raw_Sample/recording.mp3",
     "time_range": "0-15 minutes"
   },
   "pipeline_results": {
     "audio_extraction": {
       "success": true,
-      "output_file": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20251005_203311/01_extracted_audio/recording_0m_to_15m.mp3"
+      "output_file": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20251007_133102/01_extracted_audio/recording_0m_to_15m.mp3"
     },
     "voice_separation": {
       "success": true,
@@ -27,7 +27,7 @@
     }
   },
   "workspace_status": {
-    "workspace_path": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20251005_203311",
+    "workspace_path": "/Users/adamleeperelman/Documents/LLM/Voice Clone/voice_clone_project_20251007_133102",
     "separation": {
       "samples_directory_exists": false
     },
@@ -51,9 +51,8 @@
         "E2-TTS",
         "custom"
       ],
-      "reference_audio_found": true,
-      "generated_audio_count": 0,
-      "reference_audio_path": "/Users/adamleeperelman/Documents/LLM/Voice Clone/ai_voice_samples/left_speaker/AI_001_8.3s_q7.wav"
+      "reference_audio_found": false,
+      "generated_audio_count": 0
     }
   },
   "test_phrase": "Hello, this is a test of the fine-tuned voice model using multiple training samples for high quality synthesis."
