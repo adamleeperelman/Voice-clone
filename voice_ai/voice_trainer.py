@@ -212,12 +212,109 @@ class VoiceTrainer:
             print(f"⚠️  Error transcribing {audio_path}: {e}")
             return ""
     
+    def validate_and_fix_sample_rate(self, 
+                                     training_dir: str,
+                                     target_rate: int = 24000,
+                                     backup: bool = True) -> Dict:
+        """
+        Validate and fix sample rates in training data directory
+        
+        Args:
+            training_dir: Directory containing training audio files
+            target_rate: Target sample rate (default 24000 for F5-TTS)
+            backup: Whether to backup original files before conversion
+            
+        Returns:
+            Dictionary with validation/fix results
+        """
+        try:
+            import soundfile as sf
+            import librosa
+        except ImportError:
+            print("❌ soundfile and librosa required for sample rate validation")
+            print("Install with: pip install soundfile librosa")
+            return {}
+        
+        training_path = Path(training_dir)
+        if not training_path.exists():
+            training_path = Path(self.workspace_path) / training_dir
+            
+        wavs_dir = training_path / "wavs" if (training_path / "wavs").exists() else training_path
+        
+        if not wavs_dir.exists():
+            print(f"❌ Directory not found: {wavs_dir}")
+            return {}
+        
+        audio_files = list(wavs_dir.glob("*.wav"))
+        if not audio_files:
+            print(f"❌ No WAV files found in {wavs_dir}")
+            return {}
+        
+        print(f"🔍 Checking sample rates in {len(audio_files)} files...")
+        
+        files_to_fix = []
+        all_correct = True
+        
+        for audio_file in audio_files:
+            info = sf.info(str(audio_file))
+            if info.samplerate != target_rate:
+                files_to_fix.append((audio_file, info.samplerate))
+                all_correct = False
+        
+        if all_correct:
+            print(f"✅ All files already at {target_rate} Hz")
+            return {"status": "ok", "target_rate": target_rate, "files_checked": len(audio_files)}
+        
+        print(f"⚠️  Found {len(files_to_fix)} files with incorrect sample rate")
+        print(f"🔧 Converting to {target_rate} Hz...")
+        
+        # Create backup if requested
+        if backup:
+            backup_dir = wavs_dir.parent / f"wavs_backup_{files_to_fix[0][1]}hz"
+            backup_dir.mkdir(exist_ok=True)
+            print(f"💾 Backing up original files to: {backup_dir}")
+            
+            for audio_file, _ in files_to_fix:
+                shutil.copy2(audio_file, backup_dir / audio_file.name)
+        
+        # Resample files
+        fixed_count = 0
+        for audio_file, original_rate in files_to_fix:
+            try:
+                audio, _ = librosa.load(str(audio_file), sr=target_rate, mono=True)
+                sf.write(str(audio_file), audio, target_rate)
+                fixed_count += 1
+                print(f"   ✅ {audio_file.name}: {original_rate} Hz → {target_rate} Hz")
+            except Exception as e:
+                print(f"   ❌ Error fixing {audio_file.name}: {e}")
+        
+        result = {
+            "status": "fixed",
+            "target_rate": target_rate,
+            "files_checked": len(audio_files),
+            "files_fixed": fixed_count,
+            "backup_dir": str(backup_dir) if backup else None
+        }
+        
+        print(f"✅ Fixed {fixed_count}/{len(files_to_fix)} files")
+        if backup:
+            print(f"💾 Originals backed up in: {backup_dir}")
+        
+        return result
+    
     def prepare_training_data(self, 
                             source_dir: str, 
                             output_dir: str = "F5_TTS/finetune_data",
-                            speaker_name: str = "custom_speaker") -> Dict:
+                            speaker_name: str = "custom_speaker",
+                            validate_sample_rate: bool = True) -> Dict:
         """
         Prepare training data for F5-TTS from audio samples
+        
+        Args:
+            source_dir: Source directory with audio files
+            output_dir: Output directory for training data
+            speaker_name: Name for the speaker
+            validate_sample_rate: Auto-validate and fix sample rates (default True)
         """
         print(f"🎯 Preparing F5-TTS training data from: {source_dir}")
         
@@ -263,8 +360,8 @@ class VoiceTrainer:
                 training_filename = f"{speaker_name}_{i+1:03d}.wav"
                 training_path = wavs_dir / training_filename
                 
-                # Ensure audio is in correct format (16kHz, mono)
-                audio = audio.set_frame_rate(16000).set_channels(1)
+                # Ensure audio is in correct format (24kHz, mono) - F5-TTS requires 24kHz
+                audio = audio.set_frame_rate(24000).set_channels(1)
                 audio.export(str(training_path), format="wav")
                 
                 # Create training entry
@@ -314,6 +411,16 @@ class VoiceTrainer:
         print(f"   ⏱️  Total duration: {total_duration:.1f} seconds")
         print(f"   📄 Metadata: {metadata_path}")
         print(f"   📋 Filelist: {filelist_path}")
+        
+        # Validate and fix sample rates if requested
+        if validate_sample_rate:
+            print(f"\n🔍 Validating sample rates...")
+            validation_result = self.validate_and_fix_sample_rate(
+                training_dir=str(output_path),
+                target_rate=24000,
+                backup=True
+            )
+            metadata['sample_rate_validation'] = validation_result
         
         return metadata
     

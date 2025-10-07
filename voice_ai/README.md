@@ -78,13 +78,21 @@ separated_files = processor.separate_voices(
 training_metadata = processor.prepare_training_data(
     source_dir="separated_audio/left_speaker",
     output_dir="F5_TTS/finetune_data",
-    speaker_name="custom_speaker"
+    speaker_name="custom_speaker",
+    validate_sample_rate=True  # Auto-validates and fixes sample rates
 )
 
 # Validate the training data
 validation = processor.validate_training_data("F5_TTS/finetune_data")
 print(f"Training samples: {validation['total_samples']}")
 print(f"Issues found: {len(validation['issues'])}")
+
+# Fix sample rate issues (if needed separately)
+sample_rate_fix = processor.fix_sample_rate(
+    training_dir="F5_TTS/finetune_data",
+    target_rate=24000,  # F5-TTS requires 24kHz
+    backup=True  # Backup original files
+)
 ```
 
 ### Voice Synthesis
@@ -149,12 +157,53 @@ audio = synthesizer.generate_audio("Hello world", "reference.wav")
 
 #### Training Data Preparation
 - `speaker_name`: Name for the custom speaker (default: "custom_speaker")
+- `validate_sample_rate`: Auto-validate and fix sample rates (default: True)
 - Audio files should be 3-30 seconds long for optimal results
+- **Important**: F5-TTS requires 24kHz sample rate - automatic validation prevents gibberish output
 
 #### Voice Synthesis
 - `model`: F5-TTS model to use (default: "F5-TTS")
 - `speed`: Speech speed multiplier (default: 1.0)
 - `remove_silence`: Remove silence from generated audio (default: True)
+- `nfe_step`: Denoising steps for quality (32=fast, 64-96=high quality)
+- `cfg_strength`: Guidance strength (2.0=default, 3.0-4.0=clearer speech)
+
+## Sample Rate Validation
+
+**Critical Feature**: F5-TTS requires 24kHz sample rate. Mismatched sample rates cause gibberish output.
+
+### Automatic Validation (Recommended)
+```python
+# Automatically validates during training data preparation
+training_metadata = processor.prepare_training_data(
+    source_dir="audio_samples",
+    validate_sample_rate=True  # Default: enabled
+)
+```
+
+### Manual Validation
+```python
+# Fix sample rates in existing training data
+result = processor.fix_sample_rate(
+    training_dir="F5_TTS/finetune_data",
+    target_rate=24000,  # F5-TTS requirement
+    backup=True  # Backs up originals before conversion
+)
+
+# Result includes:
+# - status: 'ok' (no changes) or 'fixed' (files resampled)
+# - files_checked: Total files validated
+# - files_fixed: Number of files resampled
+# - backup_dir: Location of backup files
+```
+
+**What it does:**
+1. ✅ Checks all audio files in training directory
+2. ✅ Identifies files with incorrect sample rates
+3. ✅ Creates backup of original files (optional)
+4. ✅ Resamples audio to 24kHz using high-quality librosa
+5. ✅ Validates conversion success
+
 
 ## Dependencies
 

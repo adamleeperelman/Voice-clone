@@ -240,6 +240,27 @@ class VoiceAIProcessor:
         """
         return self.trainer.validate_training_data(training_dir)
     
+    def fix_sample_rate(self, 
+                       training_dir: str = "F5_TTS/finetune_data",
+                       target_rate: int = 24000,
+                       backup: bool = True) -> Dict:
+        """
+        Validate and fix sample rates in training data
+        
+        Args:
+            training_dir: Directory containing training data
+            target_rate: Target sample rate (default 24000 for F5-TTS)
+            backup: Whether to backup original files
+        
+        Returns:
+            Results of sample rate validation/fix
+        """
+        return self.trainer.validate_and_fix_sample_rate(
+            training_dir=training_dir,
+            target_rate=target_rate,
+            backup=backup
+        )
+    
     # Synthesis Methods
     def synthesize_speech(self, 
                          text: str, 

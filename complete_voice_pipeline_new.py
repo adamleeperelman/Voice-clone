@@ -1045,3 +1045,5 @@ if __name__ == "__main__":
 
     # Step 11: Generate report
     pipeline.step11_generate_report()
+
+# %%

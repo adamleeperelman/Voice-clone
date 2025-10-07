@@ -29,11 +29,63 @@ class VoiceSynthesizer:
     def _check_f5_tts(self) -> bool:
         """Check if F5-TTS is available"""
         try:
-            result = subprocess.run(['python', '-c', 'import f5_tts; print("available")'], 
-                                  capture_output=True, text=True, cwd=self.workspace_path)
+            result = subprocess.run([sys.executable, '-c', 'import f5_tts; print("available")'], 
+                                  capture_output=True, text=True)
             return result.returncode == 0
         except Exception:
             return False
+    
+    def _find_finetuned_checkpoint(self) -> Optional[str]:
+        """Find the most recent fine-tuned checkpoint in the workspace"""
+        # Search common checkpoint locations
+        search_paths = [
+            Path(self.workspace_path) / "06_models" / "f5_tts",
+            Path(self.workspace_path) / "F5_TTS" / "finetune_data" / "checkpoints",
+            Path(self.workspace_path) / "checkpoints"
+        ]
+        
+        checkpoint_files = []
+        for search_path in search_paths:
+            if search_path.exists():
+                checkpoint_files.extend(search_path.glob("*.pt"))
+                checkpoint_files.extend(search_path.glob("*.safetensors"))
+        
+        if not checkpoint_files:
+            return None
+        
+        # Return the most recent checkpoint
+        latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
+        return str(latest_checkpoint)
+    
+    def _get_reference_text(self, reference_audio: str) -> Optional[str]:
+        """Extract reference text from training metadata if available"""
+        try:
+            # Get the filename from the reference audio path
+            ref_filename = Path(reference_audio).name
+            
+            # Look for metadata in common locations
+            metadata_paths = [
+                Path(self.workspace_path) / "05_training_data" / "metadata.json",
+                Path(self.workspace_path) / "F5_TTS" / "finetune_data" / "metadata.json"
+            ]
+            
+            for metadata_path in metadata_paths:
+                if not metadata_path.exists():
+                    continue
+                    
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                
+                # Search for matching audio file in samples
+                for sample in metadata.get('samples', []):
+                    audio_path = sample.get('audio_path', '')
+                    # Match by filename
+                    if Path(audio_path).name == ref_filename or ref_filename in audio_path:
+                        return sample.get('text', '')
+            
+            return None
+        except Exception as e:
+            return None
     
     def get_available_models(self) -> List[str]:
         """Get list of available F5-TTS models"""
@@ -88,9 +140,27 @@ class VoiceSynthesizer:
                       model: str = "F5-TTS", 
                       output_path: str = None,
                       speed: float = 1.0,
-                      remove_silence: bool = True) -> str:
+                      remove_silence: bool = True,
+                      checkpoint_path: str = None,
+                      nfe_step: int = 32,
+                      cfg_strength: float = 2.0,
+                      sway_sampling_coef: float = -1.0,
+                      reference_text: str = None) -> str:
         """
         Generate audio using F5-TTS
+        
+        Args:
+            text: Text to synthesize
+            reference_audio: Path to reference audio file
+            model: Model name (F5-TTS, E2-TTS, etc.)
+            output_path: Output file path
+            speed: Speech speed (default 1.0)
+            remove_silence: Remove silence from output
+            checkpoint_path: Path to fine-tuned model checkpoint (.pt file)
+            nfe_step: Number of denoising steps (higher = better quality, slower)
+            cfg_strength: Classifier-free guidance strength
+            sway_sampling_coef: Sway sampling coefficient
+            reference_text: Transcript of reference audio (helps with clarity)
         """
         if not self.f5_tts_available:
             print("❌ F5-TTS not available. Install with: pip install f5-tts")
@@ -118,21 +188,55 @@ class VoiceSynthesizer:
             print(f"❌ Reference audio not found: {reference_audio}")
             return ""
         
+        # Auto-detect fine-tuned checkpoint if not provided
+        if not checkpoint_path:
+            checkpoint_path = self._find_finetuned_checkpoint()
+        
+        # Auto-load reference text from metadata if not provided
+        if not reference_text and reference_audio:
+            reference_text = self._get_reference_text(reference_audio)
+        
         print(f"🎤 Generating audio with F5-TTS...")
         print(f"   📝 Text: {text[:100]}{'...' if len(text) > 100 else ''}\"")
         print(f"   🎯 Reference: {Path(reference_audio).name}")
+        if reference_text:
+            print(f"   📄 Ref Text: {reference_text[:80]}{'...' if len(reference_text) > 80 else ''}\"")
         print(f"   🤖 Model: {model}")
+        if checkpoint_path:
+            print(f"   🔬 Checkpoint: {Path(checkpoint_path).name}")
+        print(f"   ⚙️  NFE Steps: {nfe_step} (quality)")
+        print(f"   📊 CFG Strength: {cfg_strength}")
         
         try:
+            # Map model names to F5-TTS CLI expected format
+            model_map = {
+                "F5-TTS": "F5TTS_Base",
+                "E2-TTS": "E2TTS_Base",
+                "F5TTS": "F5TTS_Base",
+                "E2TTS": "E2TTS_Base"
+            }
+            cli_model = model_map.get(model, model)
+            
             # Construct F5-TTS command
             cmd = [
-                "f5-tts_infer-cli",
-                "--model", model,
+                sys.executable, "-m", "f5_tts.infer.infer_cli",
+                "--model", cli_model,
                 "--ref_audio", reference_audio,
                 "--gen_text", text,
                 "--output_dir", str(Path(output_path).parent),
-                "--output_file", Path(output_path).name
+                "--output_file", Path(output_path).name,
+                "--nfe_step", str(nfe_step),
+                "--cfg_strength", str(cfg_strength),
+                "--sway_sampling_coef", str(sway_sampling_coef)
             ]
+            
+            # Add reference text if provided (helps with intelligibility)
+            if reference_text:
+                cmd.extend(["--ref_text", reference_text])
+            
+            # Add fine-tuned checkpoint if available
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                cmd.extend(["--ckpt_file", checkpoint_path])
             
             # Add optional parameters
             if speed != 1.0:
@@ -179,11 +283,19 @@ class VoiceSynthesizer:
                       reference_audio: str = None, 
                       model: str = "F5-TTS",
                       output_dir: str = "generated_audio",
-                      name_prefix: str = "generated") -> List[str]:
+                      name_prefix: str = "generated",
+                      checkpoint_path: str = None,
+                      **kwargs) -> List[str]:
         """
         Generate multiple audio files in batch
         """
         print(f"🎯 Starting batch audio generation ({len(texts)} items)...")
+        
+        # Auto-detect checkpoint if not provided
+        if not checkpoint_path:
+            checkpoint_path = self._find_finetuned_checkpoint()
+            if checkpoint_path:
+                print(f"🔬 Using fine-tuned checkpoint: {Path(checkpoint_path).name}")
         
         # Create output directory
         output_path = Path(self.workspace_path) / output_dir
@@ -205,7 +317,9 @@ class VoiceSynthesizer:
                 text=text,
                 reference_audio=reference_audio,
                 model=model,
-                output_path=str(file_path)
+                output_path=str(file_path),
+                checkpoint_path=checkpoint_path,
+                **kwargs
             )
             
             if result_path:
@@ -223,7 +337,9 @@ class VoiceSynthesizer:
     def test_voice_cloning(self, 
                           reference_audio: str = None, 
                           model: str = "F5-TTS",
-                          output_dir: str = "voice_tests") -> List[str]:
+                          output_dir: str = "voice_tests",
+                          checkpoint_path: str = None,
+                          **kwargs) -> List[str]:
         """
         Run voice cloning tests with predefined test phrases
         """
@@ -238,9 +354,15 @@ class VoiceSynthesizer:
         
         print(f"🧪 Running voice cloning tests...")
         
+        # Auto-detect checkpoint if not provided
+        if not checkpoint_path:
+            checkpoint_path = self._find_finetuned_checkpoint()
+            if checkpoint_path:
+                print(f"🔬 Using fine-tuned checkpoint: {Path(checkpoint_path).name}")
+        
         # Create test output directory
         test_output_path = Path(self.workspace_path) / output_dir
-        test_output_path.mkdir(exist_ok=True)
+        test_output_path.mkdir(parents=True, exist_ok=True)
         
         generated_files = []
         
@@ -254,7 +376,9 @@ class VoiceSynthesizer:
                 text=phrase,
                 reference_audio=reference_audio,
                 model=model,
-                output_path=str(file_path)
+                output_path=str(file_path),
+                checkpoint_path=checkpoint_path,
+                **kwargs
             )
             
             if result_path:
