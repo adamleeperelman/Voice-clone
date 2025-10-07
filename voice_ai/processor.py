@@ -125,9 +125,10 @@ class VoiceAIProcessor:
                               silence_thresh: int = -35,
                               min_segment_len: float = 2.0,
                               max_segment_len: float = 20.0,
+                              use_stereo_turns: bool = True,
                               **kwargs) -> List[str]:
         """
-        Extract voice segments from audio (single speaker)
+        Extract voice segments from audio (single speaker or stereo turn-based)
         
         Args:
             input_path: Path to input audio file
@@ -137,23 +138,56 @@ class VoiceAIProcessor:
             silence_thresh: Silence threshold in dB
             min_segment_len: Minimum segment length in seconds
             max_segment_len: Maximum segment length in seconds
+            use_stereo_turns: Use turn-based segmentation for stereo audio
             **kwargs: Additional parameters for segmentation
         
         Returns:
             List of saved audio segment file paths
         """
+        from pydub import AudioSegment
+        
+        # Check if audio is stereo
+        audio = AudioSegment.from_file(input_path)
+        is_stereo = audio.channels == 2
+        
         # Convert duration parameters to milliseconds for voice separator
         min_segment_len_ms = int(min_segment_len * 1000)
         max_segment_len_ms = int(max_segment_len * 1000)
         
-        # Use the voice separator's extract_segments method for segmentation
-        segments_data, original_audio = self.voice_separator.extract_segments(
-            input_path, 
-            min_silence_len=silence_len,
-            silence_thresh=silence_thresh,
-            min_segment_len=min_segment_len_ms,
-            max_segment_len=max_segment_len_ms
-        )
+        if is_stereo and use_stereo_turns:
+            print("🔄 Using turn-based stereo segmentation...")
+            # Use turn-based segmentation for stereo
+            segments_dict, original_audio = self.voice_separator.extract_stereo_segments_by_turns(
+                input_path,
+                min_segment_len=min_segment_len_ms,
+                max_segment_len=max_segment_len_ms,
+                silence_thresh=silence_thresh,
+                min_turn_gap=500
+            )
+            
+            # Determine which channel to use based on output_dir name
+            if 'left' in str(output_dir).lower():
+                segments_data = segments_dict.get('left', [])
+                speaker = 'left'
+            elif 'right' in str(output_dir).lower():
+                segments_data = segments_dict.get('right', [])
+                speaker = 'right'
+            else:
+                # Default to left or use both
+                segments_data = segments_dict.get('left', [])
+                speaker = 'left'
+            
+            print(f"📊 Extracted {len(segments_data)} segments from {speaker} channel using turn-based analysis")
+        else:
+            print("🔄 Using silence-based segmentation...")
+            # Use the voice separator's extract_segments method for segmentation
+            segments_data, original_audio = self.voice_separator.extract_segments(
+                input_path, 
+                min_silence_len=silence_len,
+                silence_thresh=silence_thresh,
+                min_segment_len=min_segment_len_ms,
+                max_segment_len=max_segment_len_ms
+            )
         
         # Create output directory
         output_path = Path(output_dir)

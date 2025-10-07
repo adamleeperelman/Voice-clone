@@ -91,6 +91,199 @@ class VoiceSeparator:
         print(f"📊 Optimized segments: {len(optimized_segments)} (reduced from {len(segments)})")
         return optimized_segments, audio
     
+    def extract_stereo_segments_by_turns(self,
+                                        audio_path: str,
+                                        min_segment_len: int = 6000,
+                                        max_segment_len: int = 20000,
+                                        silence_thresh: int = -40,
+                                        min_turn_gap: int = 500) -> Tuple[Dict[str, List], AudioSegment]:
+        """
+        Extract segments from stereo audio by analyzing turn-taking between channels
+        
+        Args:
+            audio_path: Path to stereo audio file
+            min_segment_len: Minimum segment length in ms (default 6s)
+            max_segment_len: Maximum segment length in ms (default 20s)
+            silence_thresh: Silence threshold in dB
+            min_turn_gap: Minimum gap between turns in ms
+            
+        Returns:
+            Dict with 'left' and 'right' segment lists, and original audio
+        """
+        print(f"🎵 Loading stereo audio: {audio_path}")
+        
+        # Load audio (must be stereo)
+        audio = AudioSegment.from_file(audio_path)
+        
+        if audio.channels != 2:
+            print(f"⚠️  Audio is not stereo ({audio.channels} channels), falling back to mono segmentation")
+            segments, _ = self.extract_segments(audio_path, min_segment_len=min_segment_len, max_segment_len=max_segment_len)
+            return {'left': segments, 'right': []}, audio
+        
+        # Split into channels
+        left_channel = audio.split_to_mono()[0]
+        right_channel = audio.split_to_mono()[1]
+        
+        print("🔍 Analyzing turn-taking between channels...")
+        
+        # Calculate adaptive threshold based on channel RMS
+        left_rms = left_channel.rms
+        right_rms = right_channel.rms
+        avg_rms = (left_rms + right_rms) / 2
+        
+        # Set threshold much lower - use 3% of average RMS or minimum of 50
+        # (Speech energy is often much lower than average due to silence periods)
+        silence_threshold = max(avg_rms * 0.03, 50)
+        
+        print(f"   Left RMS: {left_rms}, Right RMS: {right_rms}")
+        print(f"   Silence threshold: {silence_threshold:.0f} (adaptive, ~3% of avg RMS)")
+        
+        # Analyze energy in both channels with sliding window
+        window_size = 100  # ms
+        step_size = 50     # ms
+        
+        left_energy = []
+        right_energy = []
+        
+        for i in range(0, len(audio), step_size):
+            left_chunk = left_channel[i:i+window_size]
+            right_chunk = right_channel[i:i+window_size]
+            
+            # Calculate RMS energy
+            left_rms_val = left_chunk.rms if len(left_chunk) > 0 else 0
+            right_rms_val = right_chunk.rms if len(right_chunk) > 0 else 0
+            
+            left_energy.append(left_rms_val)
+            right_energy.append(right_rms_val)
+        
+        # Find turn boundaries
+        turn_segments = {'left': [], 'right': []}
+        current_speaker = None
+        segment_start = 0
+        
+        for i in range(len(left_energy)):
+            time_ms = i * step_size
+            
+            left_active = left_energy[i] > silence_threshold
+            right_active = right_energy[i] > silence_threshold
+            
+            # Determine who's speaking (with preference for cleaner separation)
+            if left_active and not right_active:
+                speaker = 'left'
+            elif right_active and not left_active:
+                speaker = 'right'
+            elif left_active and right_active:
+                # Both speaking - check if one is significantly louder (>50% difference)
+                ratio = left_energy[i] / right_energy[i] if right_energy[i] > 0 else 10
+                if ratio > 1.5:
+                    speaker = 'left'
+                elif ratio < 0.67:
+                    speaker = 'right'
+                else:
+                    # Too close - mark as overlap (no speaker)
+                    speaker = None
+            else:
+                # Both silent
+                speaker = None
+            
+            # Detect turn change
+            if speaker != current_speaker:
+                # Save previous segment if long enough
+                if current_speaker is not None:
+                    segment_duration = time_ms - segment_start
+                    
+                    if segment_duration >= min_segment_len:
+                        # Extract the segment
+                        if current_speaker == 'left':
+                            segment_audio = left_channel[segment_start:time_ms]
+                        else:
+                            segment_audio = right_channel[segment_start:time_ms]
+                        
+                        turn_segments[current_speaker].append({
+                            'audio': segment_audio,
+                            'start': segment_start,
+                            'end': time_ms,
+                            'duration': segment_duration
+                        })
+                
+                # Start new segment
+                if speaker is not None:
+                    segment_start = time_ms
+                current_speaker = speaker
+        
+        # Don't forget the last segment
+        if current_speaker is not None:
+            segment_duration = len(audio) - segment_start
+            if segment_duration >= min_segment_len:
+                if current_speaker == 'left':
+                    segment_audio = left_channel[segment_start:]
+                else:
+                    segment_audio = right_channel[segment_start:]
+                
+                turn_segments[current_speaker].append({
+                    'audio': segment_audio,
+                    'start': segment_start,
+                    'end': len(audio),
+                    'duration': segment_duration
+                })
+        
+        # Merge and optimize segments
+        optimized_segments = {'left': [], 'right': []}
+        
+        for speaker in ['left', 'right']:
+            segments = turn_segments[speaker]
+            
+            if not segments:
+                continue
+            
+            # Merge consecutive segments if they're close together
+            merged = []
+            current_merged = segments[0].copy()
+            
+            for i in range(1, len(segments)):
+                gap = segments[i]['start'] - current_merged['end']
+                combined_duration = segments[i]['end'] - current_merged['start']
+                
+                # Merge if gap is small and combined duration is reasonable
+                if gap <= min_turn_gap and combined_duration <= max_segment_len:
+                    # Merge segments
+                    channel = left_channel if speaker == 'left' else right_channel
+                    current_merged['audio'] = channel[current_merged['start']:segments[i]['end']]
+                    current_merged['end'] = segments[i]['end']
+                    current_merged['duration'] = segments[i]['end'] - current_merged['start']
+                else:
+                    # Save current and start new
+                    merged.append(current_merged)
+                    current_merged = segments[i].copy()
+            
+            # Don't forget last segment
+            merged.append(current_merged)
+            
+            # Split any segments that exceed max_segment_len
+            final_segments = []
+            for seg in merged:
+                if seg['duration'] > max_segment_len:
+                    # Split long segment into chunks at max_segment_len
+                    channel = left_channel if speaker == 'left' else right_channel
+                    start = seg['start']
+                    while start < seg['end']:
+                        end = min(start + max_segment_len, seg['end'])
+                        chunk = channel[start:end]
+                        # Only add if meets minimum length
+                        if len(chunk) >= min_segment_len:
+                            final_segments.append(chunk)
+                        start = end
+                else:
+                    final_segments.append(seg['audio'])
+            
+            optimized_segments[speaker] = final_segments
+        
+        print(f"✅ Turn-based segmentation complete:")
+        print(f"   Left channel: {len(optimized_segments['left'])} segments")
+        print(f"   Right channel: {len(optimized_segments['right'])} segments")
+        
+        return optimized_segments, audio
+    
     def _optimize_segments(self, segments: List, min_len: int = 5000, max_len: int = 15000) -> List:
         """Merge short segments and split long ones"""
         optimized = []

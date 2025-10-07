@@ -424,62 +424,69 @@ class VoicePipeline:
         if not self.channels:
             raise ValueError("Must call step4_separate_channels() first")
         
-        print(f"\n🎯 Step 5: Extract Voice Segments (Left Speaker Only)")
+        print(f"\n🎯 Step 5: Extract Voice Segments (Turn-Based Analysis)")
         
         separation_output = self.project_dir / "03_separated_voices"
         audio_for_separation = self.channels['left']
         
-        # Define parameter sets from strict to very permissive
+        # Use the original stereo file for turn-based analysis
+        original_stereo = self.extracted_file
+        
+        # Turn-based segmentation parameters (optimized for clean 6-8s+ segments)
         parameter_sets = [
             {
-                "name": "Standard",
-                "min_duration": 8.0,
-                "min_confidence": -0.5,
-                "max_no_speech_prob": 0.3,
-                "min_segment_len": 8.0,
-                "silence_len": 2000
+                "name": "Turn-Based Clean",
+                "min_duration": 6.0,
+                "min_segment_len": 6.0,
+                "max_segment_len": 20.0,
+                "silence_thresh": -40,
+                "use_stereo_turns": True
             },
             {
-                "name": "Relaxed",
-                "min_duration": 3.0,
-                "min_confidence": -0.8,
-                "max_no_speech_prob": 0.6,
-                "min_segment_len": 3.0,
-                "silence_len": 1500
+                "name": "Turn-Based Relaxed",
+                "min_duration": 5.0,
+                "min_segment_len": 5.0,
+                "max_segment_len": 20.0,
+                "silence_thresh": -40,
+                "use_stereo_turns": True
             },
             {
-                "name": "Permissive",
-                "min_duration": 1.0,
-                "min_confidence": -1.5,
-                "max_no_speech_prob": 1.0,
-                "min_segment_len": 1.0,
-                "silence_len": 1000
-            },
-            {
-                "name": "Very Permissive",
-                "min_duration": 1.0,
-                "min_confidence": -2.0,
-                "max_no_speech_prob": 2.0,
-                "min_segment_len": 1.0,
-                "silence_len": 1000
+                "name": "Silence-Based Fallback",
+                "min_duration": 6.0,
+                "min_segment_len": 6.0,
+                "max_segment_len": 20.0,
+                "silence_len": 1500,
+                "silence_thresh": -35,
+                "use_stereo_turns": False
             }
         ]
         
         # Try each parameter set until one succeeds
         for attempt, params in enumerate(parameter_sets, 1):
-            print(f"\n   🔄 Attempt {attempt}: {params['name']} parameters")
-            log_step(self.project_dir, "SEPARATION", f"Attempting voice segmentation with {params['name']} parameters")
+            print(f"\n   🔄 Attempt {attempt}: {params['name']} segmentation")
+            log_step(self.project_dir, "SEPARATION", f"Attempting voice segmentation with {params['name']}")
             
             try:
-                # Extract voice segments from left channel only
+                # Determine input file based on segmentation method
+                if params.get('use_stereo_turns', False):
+                    # Use original stereo for turn-based analysis
+                    input_file = original_stereo
+                    print(f"   📻 Using stereo file for turn-based analysis: {input_file}")
+                else:
+                    # Use left channel only for silence-based
+                    input_file = audio_for_separation
+                    print(f"   📻 Using left channel for silence-based analysis: {input_file}")
+                
+                # Extract voice segments
                 separated_files = self.processor.extract_voice_segments(
-                    input_path=audio_for_separation,
+                    input_path=input_file,
                     output_dir=str(separation_output / "left_speaker"),
                     min_duration=params["min_duration"],
-                    silence_len=params["silence_len"],
-                    silence_thresh=-35,
+                    silence_len=params.get("silence_len", 1000),
+                    silence_thresh=params["silence_thresh"],
                     min_segment_len=params["min_segment_len"],
-                    max_segment_len=20.0
+                    max_segment_len=params["max_segment_len"],
+                    use_stereo_turns=params.get("use_stereo_turns", False)
                 )
                 
                 # Validate output
@@ -488,7 +495,7 @@ class VoicePipeline:
                     existing_files = [f for f in separated_files if os.path.exists(f)]
                     
                     if existing_files:
-                        log_step(self.project_dir, "SEPARATION", f"✅ Success with {params['name']} parameters: {len(existing_files)} voice segments")
+                        log_step(self.project_dir, "SEPARATION", f"✅ Success with {params['name']}: {len(existing_files)} clean voice segments")
                         log_step(self.project_dir, "SEPARATION", f"Left speaker samples: {len(existing_files)}")
                         
                         self.separated_files = existing_files
@@ -497,10 +504,10 @@ class VoicePipeline:
                         log_step(self.project_dir, "SEPARATION", f"❌ Files reported but don't exist on disk")
                         separated_files = []
                 else:
-                    log_step(self.project_dir, "SEPARATION", f"❌ No segments generated with {params['name']} parameters")
+                    log_step(self.project_dir, "SEPARATION", f"❌ No segments generated with {params['name']}")
                     
             except Exception as e:
-                log_step(self.project_dir, "SEPARATION", f"❌ Error with {params['name']} parameters: {e}")
+                log_step(self.project_dir, "SEPARATION", f"❌ Error with {params['name']}: {e}")
                 separated_files = []
             
             # If this was the last attempt and still failed
