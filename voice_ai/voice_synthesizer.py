@@ -142,8 +142,8 @@ class VoiceSynthesizer:
                       speed: float = 1.0,
                       remove_silence: bool = True,
                       checkpoint_path: str = None,
-                      nfe_step: int = 32,
-                      cfg_strength: float = 2.0,
+                      nfe_step: int = 40,  # Increased from 32 to 40 for smoother output
+                      cfg_strength: float = 1.5,  # Reduced from 2.0 to 1.5 to reduce artifacts
                       sway_sampling_coef: float = -1.0,
                       reference_text: str = None) -> str:
         """
@@ -157,8 +157,8 @@ class VoiceSynthesizer:
             speed: Speech speed (default 1.0)
             remove_silence: Remove silence from output
             checkpoint_path: Path to fine-tuned model checkpoint (.pt file)
-            nfe_step: Number of denoising steps (higher = better quality, slower)
-            cfg_strength: Classifier-free guidance strength
+            nfe_step: Number of denoising steps (40 for smoother, less robotic output)
+            cfg_strength: Classifier-free guidance strength (1.5 reduces artifacts)
             sway_sampling_coef: Sway sampling coefficient
             reference_text: Transcript of reference audio (helps with clarity)
         """

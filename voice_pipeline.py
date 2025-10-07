@@ -738,21 +738,27 @@ class VoicePipeline:
             config.model.tokenizer = dataset_info["tokenizer"]
             config.datasets.name = dataset_info["dataset_name"]
             config.datasets.batch_size_type = "sample"
-            config.datasets.batch_size_per_gpu = 2 if quick_test else 6
+            # Increased batch size for better stability (was 2/6, now 4/8)
+            config.datasets.batch_size_per_gpu = 4 if quick_test else 8
             config.datasets.num_workers = 2 if quick_test else 8
             config.datasets.max_samples = 0
 
-            config.optim.epochs = 1 if quick_test else 10
-            config.optim.learning_rate = 2e-5 if quick_test else 7.5e-5
-            config.optim.grad_accumulation_steps = 1
+            # Reduced epochs to prevent overfitting (was 1/10, now 1/3-5)
+            config.optim.epochs = 1 if quick_test else 3
+            # Lower learning rate for gentler updates (was 2e-5/7.5e-5, now 2e-5/5e-5)
+            config.optim.learning_rate = 2e-5 if quick_test else 5e-5
+            # Increased grad accumulation for more stable training (was 1, now 2)
+            config.optim.grad_accumulation_steps = 2
             config.optim.num_warmup_updates = max(10, len(training_files) * 2)
             config.optim.bnb_optimizer = False
 
-            config.ckpts.logger = None
-            config.ckpts.log_samples = False
+            # Enable logging to track training progress
+            config.ckpts.logger = "tensorboard"
+            config.ckpts.log_samples = True
             config.ckpts.save_per_updates = max(10, len(training_files))
             config.ckpts.last_per_updates = max(10, len(training_files))
-            config.ckpts.keep_last_n_checkpoints = 2
+            # Keep more checkpoints to test earlier ones (was 2, now 5)
+            config.ckpts.keep_last_n_checkpoints = 5
             config.ckpts.save_dir = f"ckpts/{self.project_dir.name}"
             hydra_run_dir = (models_output / f"hydra_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}").resolve()
             config.hydra.run.dir = str(hydra_run_dir)
